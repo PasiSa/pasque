@@ -1,0 +1,12 @@
+[package]
+name = "pasque"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+env_logger = "0.11"
+log = "0.4"
+mio = { version = "1.0", features = ["net", "os-poll", "os-ext"] }
+quiche = { version = "0.23", features = ["qlog"] }
+ring = "0.17"
+url = "2.5"

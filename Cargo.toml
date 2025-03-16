@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.3", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
 mio = { version = "1.0", features = ["net", "os-poll", "os-ext"] }
 quiche = { version = "0.23", features = ["qlog"] }
 ring = "0.17"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 url = "2.5"

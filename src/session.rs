@@ -1,17 +1,30 @@
+use std::io::Read;
+use std::os::unix::io::AsRawFd;
+
 use mio::net::UdpSocket;
 use ring::rand::*;
 
 use crate::config::Config;
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
+const SOCK_TOKEN: mio::Token = mio::Token(0);
+const TUN_TOKEN: mio::Token = mio::Token(1);
 
+// TODO: Should rename this to PsqConnection
 pub struct PsqSession {
     config: Config,
     socket: UdpSocket,
+    socktoken: Option<mio::Token>,
     conn: quiche::Connection,
     h3_conn: Option<quiche::h3::Connection>,
     url: url::Url,
     req_sent: bool,
+
+    // TODO: These should be in actual PsqSession struct, the above should be PsqConnection
+    // TODO: with 1-to-N mapping Option<> is then not anymore needed.
+    stream_id: u64,
+    tundev: Option<tun::Device>,
+    tuntoken: Option<mio::Token>,
 }
 
 impl PsqSession {
@@ -42,7 +55,6 @@ impl PsqSession {
             .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
             .unwrap();
 
-        qconfig.set_max_idle_timeout(5000);
         qconfig.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
         qconfig.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
         qconfig.set_initial_max_data(10_000_000);
@@ -88,17 +100,38 @@ impl PsqSession {
 
             panic!("send() failed: {:?}", e);
         }
-        PsqSession { config, socket, conn, h3_conn: None, url, req_sent: false }
+        PsqSession {
+            config,
+            socket,
+            socktoken: None,
+            conn,
+            h3_conn: None,
+            url,
+            req_sent: false,
+            stream_id: 0,
+            tundev: None,
+            tuntoken: None,
+        }
 
     }
 
 
-    pub fn register_mio_poll(&mut self, poll: &mio::Poll) {
-        // TODO: to suppress warning of unused config member, remove later...
-        debug!("TUN IP local is {}", self.config.tun_ip_local());  
-        poll.registry()
-            .register(&mut self.socket, mio::Token(0), mio::Interest::READABLE)
-            .unwrap();
+    pub fn set_mio_poll(&mut self, poll: &mio::Poll) {
+        if self.socktoken.is_none() {
+            poll.registry()
+                .register(&mut self.socket, SOCK_TOKEN, mio::Interest::READABLE)
+                .unwrap();
+            self.socktoken = Some(SOCK_TOKEN);
+        }
+        if self.tundev.is_some() && self.tuntoken.is_none() {
+            let tundev = self.tundev.as_mut().unwrap();
+            let tunfd = tundev.as_raw_fd();
+            let mut tunsource = mio::unix::SourceFd(&tunfd);
+            poll.registry()
+                .register(&mut tunsource, TUN_TOKEN, mio::Interest::READABLE)
+                .unwrap();
+            self.tuntoken = Some(TUN_TOKEN);
+        }
     }
 
 
@@ -113,7 +146,7 @@ impl PsqSession {
         }
 
         for event in events {
-            if event.token() == mio::Token(0) {
+            if event.token() == self.socktoken.unwrap() {
                 'read: loop {
                     let (len, from) = match self.socket.recv_from(&mut buf) {
                         Ok(v) => v,
@@ -147,6 +180,12 @@ impl PsqSession {
                     };
                 }
                 self.process(&mut buf);
+            } else if self.tuntoken.is_some_and(|t| t == event.token()) {
+                let mut buf = [0u8; 1500];
+                let bytes_read = self.tundev.as_mut().unwrap().read(&mut buf).unwrap();
+
+                println!("Interface: {}", Self::packet_output(&buf, bytes_read));
+                crate::send_h3_dgram(&mut self.conn, self.stream_id, &buf[..bytes_read]).unwrap();
             }
         }
     }
@@ -201,85 +240,119 @@ impl PsqSession {
             );
         }
 
+        if self.h3_conn.is_none() {
+            // No HTTP/3 connection yet ==> nothing further to process
+            return;
+        }
         // Send HTTP requests once the QUIC connection is established, and until
         // all requests have been sent.
-        if let Some(h3_conn) = &mut self.h3_conn {
-            if !self.req_sent {
-                let req = Self::prepare_request(&self.url);
-                info!("sending HTTP request {:?}", req);
+        if !self.req_sent {
+            let req = Self::prepare_request(&self.url);
+            info!("sending HTTP request {:?}", req);
 
-                h3_conn.send_request(&mut self.conn, &req, true).unwrap();
+            self.h3_conn.as_mut().unwrap()
+                .send_request(&mut self.conn, &req, true).unwrap();
 
-                self.req_sent = true;
-            }
+            self.req_sent = true;
         }
 
-        if let Some(http3_conn) = &mut self.h3_conn {
-            // Process HTTP/3 events.
-            loop {
-                match http3_conn.poll(&mut self.conn) {
-                    Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
-                        info!(
-                            "got response headers {:?} on stream id {}",
-                            crate::hdrs_to_strings(&list),
-                            stream_id
-                        );
-                        crate::send_h3_dgram(&mut self.conn, stream_id, b"Hello").unwrap();
-                    },
+        // Process HTTP/3 events.
+        loop {
+            match self.h3_conn.as_mut().unwrap().poll(&mut self.conn) {
+                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
+                    info!(
+                        "got response headers {:?} on stream id {}",
+                        crate::hdrs_to_strings(&list),
+                        stream_id
+                    );
+                    // OK response to H3 connect request
+                    // => bring up the TUN interface
+                    self.setup_tun_dev();
+                    self.stream_id = stream_id;
+                },
 
-                    Ok((stream_id, quiche::h3::Event::Data)) => {
-                        while let Ok(read) =
-                            http3_conn.recv_body(&mut self.conn, stream_id, buf)
-                        {
-                            debug!(
-                                "got {} bytes of response data on stream {}",
-                                read, stream_id
-                            );
-
-                            print!("{}", unsafe {
-                                std::str::from_utf8_unchecked(&buf[..read])
-                            });
-                        }
-                    },
-
-                    Ok((_stream_id, quiche::h3::Event::Finished)) => {
-                        info!(
-                            "response received in XX, closing..."
-                        );
-                    },
-
-                    Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
-                        error!(
-                            "request was reset by peer with {}, closing...",
-                            e
+                Ok((stream_id, quiche::h3::Event::Data)) => {
+                    while let Ok(read) =
+                        self.h3_conn.as_mut().unwrap().recv_body(&mut self.conn, stream_id, buf)
+                    {
+                        debug!(
+                            "got {} bytes of response data on stream {}",
+                            read, stream_id
                         );
 
-                        self.conn.close(true, 0x100, b"kthxbye").unwrap();
-                    },
+                        print!("{}", unsafe {
+                            std::str::from_utf8_unchecked(&buf[..read])
+                        });
+                    }
+                },
 
-                    Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
+                Ok((_stream_id, quiche::h3::Event::Finished)) => {
+                    info!(
+                        "response received in XX, closing..."
+                    );
+                },
 
-                    Ok((goaway_id, quiche::h3::Event::GoAway)) => {
-                        info!("GOAWAY id={}", goaway_id);
-                    },
+                Ok((_stream_id, quiche::h3::Event::Reset(e))) => {
+                    error!(
+                        "request was reset by peer with {}, closing...",
+                        e
+                    );
 
-                    Err(quiche::h3::Error::Done) => {
-                        break;
-                    },
+                    self.conn.close(true, 0x100, b"kthxbye").unwrap();
+                },
 
-                    Err(e) => {
-                        error!("HTTP/3 processing failed: {:?}", e);
+                Ok((_, quiche::h3::Event::PriorityUpdate)) => unreachable!(),
 
-                        break;
-                    },
-                }
+                Ok((goaway_id, quiche::h3::Event::GoAway)) => {
+                    info!("GOAWAY id={}", goaway_id);
+                },
+
+                Err(quiche::h3::Error::Done) => {
+                    break;
+                },
+
+                Err(e) => {
+                    error!("HTTP/3 processing failed: {:?}", e);
+
+                    break;
+                },
             }
         }
     }
 
 
+    fn packet_output(buf: &[u8], bytes_read: usize) -> String {
+        let mut output = format!(
+            "Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
+            bytes_read,
+            buf[16],buf[17],buf[18],buf[19],
+            buf[9],
+        );
+        if buf[9] == 6 || buf[9] == 17 {
+            output = output + &format!(
+                "Dest port: {}",
+                u16::from_be_bytes([buf[22], buf[23]])
+            );
+        }
+        output
+    }
+
+
     pub fn get_timeout(&self) -> Option<std::time::Duration> {
         self.conn.timeout()
+    }
+
+
+    fn setup_tun_dev(&mut self) {
+        let mut config = tun::Configuration::default();
+        config
+            .tun_name("tun0")   // Interface name
+            .address(self.config.tun_ip_local())  // Assign IP to the interface
+            .destination(self.config.tun_ip_local()) // Peer address
+            .netmask("255.255.255.0") // Subnet mask
+            .up(); // Bring interface up
+     
+        self.tundev = Some(tun::create(&config).expect("Failed to create TUN device"));
     }
 
 

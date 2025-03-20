@@ -25,10 +25,13 @@ fn main() {
     let mut poll = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(1024);
 
-    let mut session = PsqSession::connect(args.dest(), config);
-    session.register_mio_poll(&poll);
+    let mut session = PsqSession::connect(
+        args.dest(),
+        config,
+    );
 
     loop {
+        session.set_mio_poll(&poll);
         poll.poll(&mut events, session.get_timeout()).unwrap();
 
         session.process_events(&events);

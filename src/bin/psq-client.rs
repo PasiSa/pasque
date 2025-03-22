@@ -3,13 +3,11 @@
 extern crate log;
 
 use pasque::{
-    args::Args,
-    config::Config,
-    session::PsqSession,
+    args::Args, config::Config, connection::PsqConnection,
 };
 
-
-fn main() {
+#[tokio::main]
+async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
 
     let args = Args::new();
@@ -21,31 +19,13 @@ fn main() {
         }
     };
 
-    // Setup the event loop.
-    let mut poll = mio::Poll::new().unwrap();
-    let mut events = mio::Events::with_capacity(1024);
-
-    let mut session = PsqSession::connect(
+    let psqconn = PsqConnection::connect(
         args.dest(),
         config,
-    );
+    ).await;
 
     loop {
-        session.set_mio_poll(&poll);
-        poll.poll(&mut events, session.get_timeout()).unwrap();
-
-        session.process_events(&events);
-
-        if session.connection().is_closed() {
-            info!("connection closed, {:?}", session.connection().stats());
-            break;
-        }
-
-        session.send_packets();
-
-        if session.connection().is_closed() {
-            info!("connection closed, {:?}", session.connection().stats());
-            break;
-        }
+        let mut conn = psqconn.lock().await;
+        conn.process().await;
     }
 }

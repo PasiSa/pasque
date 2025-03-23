@@ -88,12 +88,7 @@ impl PsqConnection {
         let mut out = [0; MAX_DATAGRAM_SIZE];
         let (write, send_info) = conn.send(&mut out).expect("initial send failed");
 
-        while let Err(e) = socket.send_to(&out[..write], send_info.to).await {
-            if e.kind() == std::io::ErrorKind::WouldBlock {
-                debug!("send() would block");
-                continue;
-            }
-
+        if let Err(e) = socket.send_to(&out[..write], send_info.to).await {
             panic!("send() failed: {:?}", e);
         }
         let (tx, rx) = watch::channel(conn.timeout());

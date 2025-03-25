@@ -12,6 +12,8 @@ use tokio::{
     time::{sleep, Duration},
 };
 
+use crate::stream::PsqStream;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 
@@ -22,10 +24,12 @@ struct PartialResponse {
 }
 
 struct Client {
+    socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
     http3_conn: Option<quiche::h3::Connection>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
+    psqstream: Option<PsqStream>,
 }
 
 impl Client {
@@ -73,10 +77,20 @@ impl Client {
 
         // TODO: process datagrams properly
         let mut buf = [0; 10000];
-        if let Err(e) = conn.dgram_recv(&mut buf) {
-            debug!("Datagram status: {}", e);
-        } else {
-            debug!("Datagram received: {}", String::from_utf8_lossy(&buf));
+        match conn.dgram_recv(&mut buf) {
+            Ok(n) => {
+                debug!("Datagram received, {} bytes", n);
+                if self.psqstream.is_none() {
+                    warn!("Datagram received but no matching stream");
+                } else {
+                    self.psqstream.as_mut().unwrap().process_datagram(&buf[..n]).await;
+                }
+            },
+            Err(e) => {
+                if e != quiche::Error::Done {
+                    error!("Error receiving datagram: {}", e);
+                }
+            },
         }
     }
 
@@ -136,12 +150,9 @@ impl Client {
         &mut self, stream_id: u64, headers: &[quiche::h3::Header],
         root: &str,
     ) {
-        let conn = &mut self.conn.lock().await;
-        let http3_conn = &mut self.http3_conn.as_mut().unwrap();
-
         info!(
             "{} got request {:?} on stream id {}",
-            conn.trace_id(),
+            self.conn.lock().await.trace_id(),
             Self::hdrs_to_strings(headers),
             stream_id
         );
@@ -149,11 +160,13 @@ impl Client {
         // We decide the response based on headers alone, so stop reading the
         // request stream so that any body is ignored and pointless Data events
         // are not generated.
-        conn.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
+        self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
             .unwrap();
 
-        let (headers, body) = Self::build_response(root, headers);
+        let (headers, body) = self.build_response(stream_id, root, headers).await;
 
+        let conn = &mut self.conn.lock().await;
+        let http3_conn = &mut self.http3_conn.as_mut().unwrap();
         match http3_conn.send_response(conn, stream_id, &headers, false) {
             Ok(v) => v,
 
@@ -278,9 +291,13 @@ impl Client {
 
 
     /// Builds an HTTP/3 response given a request.
-    fn build_response(
-        root: &str, request: &[quiche::h3::Header],
+    async fn build_response(
+        &mut self,
+        stream_id: u64,
+        root: &str,
+        request: &[quiche::h3::Header],
     ) -> (Vec<quiche::h3::Header>, Vec<u8>) {
+
         let mut file_path = std::path::PathBuf::from(root);
         let mut path = std::path::Path::new("");
         let mut method = None;
@@ -314,6 +331,14 @@ impl Client {
                 }
             },
             Some(b"CONNECT") => {
+                self.psqstream = Some( PsqStream::new(stream_id) );
+                self.psqstream.as_mut().unwrap().setup_tun_dev(
+                    stream_id,
+                    &self.conn,
+                    &self.socket,
+                    "10.76.0.2".to_string(),  // TODO: read address from config
+                    "10.76.0.1".to_string(),  // TODO: read address from config
+                ).await;
                 return crate::process_connect(request);
             },
 
@@ -337,7 +362,7 @@ impl Client {
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
 pub struct PsqServer {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     qconfig: quiche::Config,
     conn_id_seed: ring::hmac::Key,
     clients: ClientMap,
@@ -381,7 +406,12 @@ impl PsqServer {
         let conn_id_seed =
             ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
-        PsqServer { socket, qconfig, conn_id_seed, clients: ClientMap::new() }
+        PsqServer {
+            socket: Arc::new(socket),
+            qconfig,
+            conn_id_seed,
+            clients: ClientMap::new(),
+        }
     }
 
 
@@ -514,10 +544,12 @@ impl PsqServer {
 
             let (tx, rx) = watch::channel(conn.timeout());
             let client = Client {
+                socket: Arc::clone(&self.socket),
                 conn: Arc::new(Mutex::new(conn)),
                 http3_conn: None,
                 partial_responses: HashMap::new(),
                 timeout_tx: tx,
+                psqstream: None,
             };
             Self::timeout_watcher(Arc::clone(&client.conn), rx);
 
@@ -609,32 +641,8 @@ impl PsqServer {
         // Generate outgoing QUIC packets for all active connections and send
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
-        let mut out = [0; MAX_DATAGRAM_SIZE];
         for client in self.clients.values_mut() {
-            loop {
-                let mut conn = client.conn.lock().await;
-                let (write, send_info) = match conn.send(&mut out) {
-                    Ok(v) => v,
-
-                    Err(quiche::Error::Done) => {
-                        debug!("{} done writing", conn.trace_id());
-                        break;
-                    },
-
-                    Err(e) => {
-                        error!("{} send failed: {:?}", conn.trace_id(), e);
-
-                        conn.close(false, 0x1, b"fail").ok();
-                        break;
-                    },
-                };
-
-                if let Err(e) = self.socket.send_to(&out[..write], send_info.to).await {
-                    panic!("send() failed: {:?}", e);
-                }
-
-                debug!("{} written {} bytes", conn.trace_id(), write);
-            }
+            crate::send_quic_packets(&client.conn, &self.socket).await;
         }
     }
 

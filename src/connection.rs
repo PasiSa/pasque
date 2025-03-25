@@ -14,7 +14,7 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 /// proxy / tunnel sessions.
 pub struct PsqConnection {
     config: Config,
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
     url: url::Url,
@@ -95,7 +95,7 @@ impl PsqConnection {
         let this = Arc::new(Mutex::new(
             PsqConnection {
                 config,
-                socket,
+                socket: Arc::new(socket),
                 conn: Arc::new(Mutex::new(conn)),
                 h3_conn: None,
                 url,
@@ -144,7 +144,26 @@ impl PsqConnection {
             return;
         }
         self.process_h3(&mut buf).await;
-        self.send_packets().await;
+
+        // TODO: process datagrams properly
+        let mut buf = [0; 10000];
+        match self.conn.lock().await.dgram_recv(&mut buf) {
+            Ok(n) => {
+                debug!("Datagram received, {} bytes", n);
+                if self.psqstream.is_none() {
+                    warn!("Datagram received but no matching stream");
+                } else {
+                    self.psqstream.as_mut().unwrap().process_datagram(&buf[..n]).await;
+                }
+            },
+            Err(e) => {
+                if e != quiche::Error::Done {
+                    error!("Error receiving datagram: {}", e);
+                }
+            },
+        }
+
+        crate::send_quic_packets(&self.conn, &self.socket).await;
     }
 
 
@@ -190,39 +209,6 @@ impl PsqConnection {
     }
 
 
-    async fn send_packets(&mut self) {
-        // Generate outgoing QUIC packets and send them on the UDP socket, until
-        // quiche reports that there are no more packets to be sent.
-        let mut out = [0; MAX_DATAGRAM_SIZE];
-        loop {
-            let (write, send_info) = match self.conn.lock().await.send(&mut out) {
-                Ok(v) => v,
-
-                Err(quiche::Error::Done) => {
-                    //debug!("done writing");
-                    break;
-                },
-
-                Err(e) => {
-                    error!("send failed: {:?}", e);
-
-                    self.conn.lock().await.close(false, 0x1, b"fail").ok();
-                    break;
-                },
-            };
-
-            if let Err(e) = self.socket.send_to(&out[..write], send_info.to).await {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    debug!("send() would block");
-                    break;
-                }
-
-                panic!("send() failed: {:?}", e);
-            }
-        }
-    }
-
-
     async fn process_h3(&mut self, buf: &mut [u8]) {
         // Create a new HTTP/3 connection once the QUIC connection is established.
         {
@@ -262,7 +248,8 @@ impl PsqConnection {
                     // Currently assuming only one stream, will be changed in future
                     self.psqstream.as_mut().unwrap().process_h3_response(
                         &mut self.h3_conn.as_mut().unwrap(),
-                        Arc::clone(&self.conn),
+                        &self.conn,
+                        &self.socket,
                         &self.config,
                         event,
                         buf

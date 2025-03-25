@@ -1,18 +1,24 @@
-use std::{
-    fs::File,
-    os::unix::io::{AsRawFd, FromRawFd},
-    sync::Arc,
+use std::sync::Arc;
+
+use bytes::{BytesMut, BufMut};
+
+use futures::stream::{SplitSink, StreamExt};
+use futures::sink::SinkExt;
+
+use tokio::{
+    net::UdpSocket,
+    sync::Mutex,
 };
 
-use tokio::io::AsyncReadExt;
-use tokio::sync::Mutex;
-
+use tokio_util::codec::{Decoder, Encoder, Framed};
+use tun::AsyncDevice;
 
 
 /// One HTTP/3 stream established with CONNECT request.
 /// Contains one proxied session/tunnel.
 pub struct PsqStream {
     stream_id: u64,
+    tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
 }
 
 impl PsqStream {
@@ -31,15 +37,21 @@ impl PsqStream {
         let stream_id = h3_conn
             .send_request(conn, &req, true).unwrap();
 
-        PsqStream { stream_id }
+        PsqStream { stream_id, tunwriter: None }
 
+    }
+
+
+    pub fn new(stream_id: u64) -> PsqStream {
+        PsqStream { stream_id, tunwriter: None }
     }
 
 
     pub async fn process_h3_response(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
-        conn: Arc<Mutex<quiche::Connection>>,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
         config: &crate::config::Config,
         event: quiche::h3::Event,
         buf: &mut [u8],
@@ -54,9 +66,10 @@ impl PsqStream {
                 // TODO: check that response is 200 OK
                 // OK response to H3 connect request
                 // => bring up the TUN interface
-                Self::setup_tun_dev(
+                self.setup_tun_dev(
                     self.stream_id,
-                    conn,
+                    &conn,
+                    &socket,
                     config.tun_ip_local().to_string(),
                     config.tun_ip_remote().to_string(),
                 ).await;
@@ -103,6 +116,53 @@ impl PsqStream {
     }
 
 
+    pub(crate) async fn setup_tun_dev(
+        &mut self,
+        stream_id: u64,
+        origconn: &Arc<Mutex<quiche::Connection>>,
+        origsocket: &Arc::<UdpSocket>,
+        tun_ip_local: String,
+        tun_ip_remote: String,
+    ) {
+        let conn = Arc::clone(origconn);
+        let socket = Arc::clone(origsocket);
+
+        let mut config = tun::Configuration::default();
+        config
+            .tun_name("tun0")   // Interface name
+            .address(&tun_ip_local)  // Assign IP to the interface
+            .destination(&tun_ip_remote) // Peer address
+            .netmask("255.255.255.0") // Subnet mask
+            .up(); // Bring interface up
+    
+        let dev = tun::create_as_async(&config).expect("Failed to create TUN device");
+        let framed = Framed::new(dev, IpPacketCodec);
+        let (writer, mut reader) = framed.split();
+        self.tunwriter = Some(writer);
+
+        tokio::spawn(async move {
+            loop {
+                while let Some(Ok(packet)) = reader.next().await {
+                    debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
+                    crate::send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
+                    crate::send_quic_packets(&conn, &socket).await;
+                }
+            }
+        });
+    }
+
+
+    pub(crate) async fn process_datagram(&mut self, buf: &[u8]) {
+        if self.tunwriter.is_some() {
+            debug!("Writing to TUN: {}", Self::packet_output(&buf[2..], buf.len()-2));
+            let packet = BytesMut::from(&buf[2..]);
+            if let Err(e) = self.tunwriter.as_mut().unwrap().send(packet).await {
+                error!("Send failed: {}", e);
+            }
+        }
+    }
+
+
     fn packet_output(buf: &[u8], bytes_read: usize) -> String {
         let mut output = format!(
             "Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
@@ -117,37 +177,6 @@ impl PsqStream {
             );
         }
         output
-    }
-
-
-    async fn setup_tun_dev(
-        stream_id: u64,
-        conn: Arc<Mutex<quiche::Connection>>,
-        tun_ip_local: String,
-        tun_ip_remote: String,
-    ) {
-        tokio::spawn(async move {
-            let mut config = tun::Configuration::default();
-            config
-                .tun_name("tun0")   // Interface name
-                .address(tun_ip_local)  // Assign IP to the interface
-                .destination(tun_ip_remote) // Peer address
-                .netmask("255.255.255.0") // Subnet mask
-                .up(); // Bring interface up
-        
-            let tundev = tun::create(&config).expect("Failed to create TUN device");
-            let fd = tundev.as_raw_fd();
-            let stdfile = unsafe { File::from_raw_fd(fd) };
-            let mut file = tokio::fs::File::from_std(stdfile);
-            loop {
-                let mut buf = [0; 65535];
-                let bytes_read = file.read(&mut buf).await.unwrap();
-
-                println!("Interface: {}", Self::packet_output(&buf, bytes_read));
-                let c = &mut *conn.lock().await;
-                crate::send_h3_dgram(c, stream_id, &buf[..bytes_read]).unwrap();
-            }
-        });
     }
 
 
@@ -172,4 +201,33 @@ impl PsqStream {
             quiche::h3::Header::new(b"capsule-protocol", b"?1"),
         ]
     }    
+}
+
+
+pub struct IpPacketCodec;
+
+impl Decoder for IpPacketCodec {
+    type Item = BytesMut;
+    type Error = std::io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<BytesMut>, std::io::Error> {
+        if src.is_empty() {
+            return Ok(None);
+        }
+
+        // In practice you'd parse IP headers here to know packet length
+        // For now, just return the whole buffer
+        let len = src.len();
+        let data = src.split_to(len);
+        Ok(Some(data))
+    }
+}
+
+impl Encoder<BytesMut> for IpPacketCodec {
+    type Error = std::io::Error;
+
+    fn encode(&mut self, item: BytesMut, dst: &mut BytesMut) -> Result<(), std::io::Error> {
+        dst.put(item);
+        Ok(())
+    }
 }

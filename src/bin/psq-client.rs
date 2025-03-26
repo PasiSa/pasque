@@ -19,13 +19,12 @@ async fn main() {
         }
     };
 
-    let psqconn = PsqConnection::connect(
+    let mut psqconn = PsqConnection::connect(
         args.dest(),
         config,
     ).await;
 
     loop {
-        let mut conn = psqconn.lock().await;
-        conn.process().await;
+        psqconn.process().await;
     }
 }

@@ -13,6 +13,8 @@ use tokio::{
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
 
+use crate::util::{hdrs_to_strings, send_quic_packets};
+
 
 /// One HTTP/3 stream established with CONNECT request.
 /// Contains one proxied session/tunnel.
@@ -60,7 +62,7 @@ impl PsqStream {
             quiche::h3::Event::Headers { list, .. } => {
                 info!(
                     "got response headers {:?} on stream id {}",
-                    crate::hdrs_to_strings(&list),
+                    hdrs_to_strings(&list),
                     self.stream_id
                 );
                 // TODO: check that response is 200 OK
@@ -144,8 +146,8 @@ impl PsqStream {
             loop {
                 while let Some(Ok(packet)) = reader.next().await {
                     debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
-                    crate::send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
-                    crate::send_quic_packets(&conn, &socket).await;
+                    Self::send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
+                    send_quic_packets(&conn, &socket).await;
                 }
             }
         });
@@ -200,7 +202,30 @@ impl PsqStream {
             quiche::h3::Header::new(b"user-agent", b"pasque"),
             quiche::h3::Header::new(b"capsule-protocol", b"?1"),
         ]
-    }    
+    }
+
+    // Sends one HTTP/3 datagram
+    fn send_h3_dgram(conn: &mut quiche::Connection, stream_id: u64, buf: &[u8]) -> Result<(), String> {
+        // TODO: real, efficient implementation
+        
+        // Quarter stream ID
+        let mut data = Self::make_varint(stream_id);
+        
+        // Context ID = 0
+        data.push(0);
+
+        // Data
+        data.extend(buf);
+
+        conn.dgram_send(&data).unwrap();
+        Ok(())
+    }
+
+    fn make_varint(i: u64) -> Vec<u8> {
+        // TODO: real implementation
+        let ret: u8 = (i % 63) as u8;
+        vec![ret]
+    }
 }
 
 

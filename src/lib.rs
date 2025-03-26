@@ -1,14 +1,8 @@
 #[macro_use]
 extern crate log;
 
-use std::sync::Arc;
-
 use quiche::ConnectionId;
-use quiche::h3::NameValue;
-use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
 
-const MAX_DATAGRAM_SIZE: usize = 1350;
 
 pub fn process_connect(_request: &[quiche::h3::Header]) -> (Vec<quiche::h3::Header>, Vec<u8>) {
     debug!("CONNECT received!");
@@ -61,74 +55,9 @@ fn make_qlog_writer(
 }
 
 
-// Sends one HTTP/3 datagram
-pub fn send_h3_dgram(conn: &mut quiche::Connection, stream_id: u64, buf: &[u8]) -> Result<(), String> {
-    // TODO: real, efficient implementation
-    
-    // Quarter stream ID
-    let mut data = make_varint(stream_id);
-    
-    // Context ID = 0
-    data.push(0);
-
-    // Data
-    data.extend(buf);
-
-    conn.dgram_send(&data).unwrap();
-    Ok(())
-}
-
-
-pub async fn send_quic_packets(conn: &Arc<Mutex<quiche::Connection>>, socket: &Arc<UdpSocket>) {
-    let mut out = [0; MAX_DATAGRAM_SIZE];
-    loop {
-        let mut conn = conn.lock().await;
-        let (write, send_info) = match conn.send(&mut out) {
-            Ok(v) => v,
-
-            Err(quiche::Error::Done) => {
-                debug!("{} done writing", conn.trace_id());
-                break;
-            },
-
-            Err(e) => {
-                error!("{} send failed: {:?}", conn.trace_id(), e);
-
-                conn.close(false, 0x1, b"fail").ok();
-                break;
-            },
-        };
-
-        if let Err(e) = socket.send_to(&out[..write], send_info.to).await {
-            panic!("send() failed: {:?}", e);
-        }
-
-        debug!("{} written {} bytes", conn.trace_id(), write);
-    }
-}
-
-
-fn make_varint(i: u64) -> Vec<u8> {
-    // TODO: real implementation
-    let ret: u8 = (i % 63) as u8;
-    vec![ret]
-}
-
-
-pub fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
-    hdrs.iter()
-        .map(|h| {
-            let name = String::from_utf8_lossy(h.name()).to_string();
-            let value = String::from_utf8_lossy(h.value()).to_string();
-
-            (name, value)
-        })
-        .collect()
-}
-
-
 pub mod args;
 pub mod config;
 pub mod connection;
 pub mod server;
 pub mod stream;
+pub mod util;

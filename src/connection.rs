@@ -1,12 +1,18 @@
 use std::sync::Arc;
 
 use ring::rand::*;
-use tokio::net::UdpSocket;
-use tokio::time::{sleep, Duration};
-use tokio::sync::{watch, Mutex};
 
-use crate::config::Config;
-use crate::stream::PsqStream;
+use tokio::{
+    net::UdpSocket,
+    time::Duration,
+    sync::{watch, Mutex},
+};
+
+use crate::{
+    config::Config,
+    stream::PsqStream,
+    util::{send_quic_packets, timeout_watcher},
+};
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -24,7 +30,7 @@ pub struct PsqConnection {
 }
 
 impl PsqConnection {
-    pub async fn connect(urlstr: &str, config: Config) -> Arc<Mutex<PsqConnection>> {
+    pub async fn connect(urlstr: &str, config: Config) -> PsqConnection {
         let url = url::Url::parse(&urlstr).unwrap();
 
         // Resolve server address.
@@ -92,19 +98,17 @@ impl PsqConnection {
             panic!("send() failed: {:?}", e);
         }
         let (tx, rx) = watch::channel(conn.timeout());
-        let this = Arc::new(Mutex::new(
-            PsqConnection {
-                config,
-                socket: Arc::new(socket),
-                conn: Arc::new(Mutex::new(conn)),
-                h3_conn: None,
-                url,
-                req_sent: false,
-                psqstream: None,
-                timeout_tx: tx,
-            }
-        ));
-        Self::timeout_watcher(Arc::clone(&this), rx);
+        let this = PsqConnection {
+            config,
+            socket: Arc::new(socket),
+            conn: Arc::new(Mutex::new(conn)),
+            h3_conn: None,
+            url,
+            req_sent: false,
+            psqstream: None,
+            timeout_tx: tx,
+        };
+        timeout_watcher(Arc::clone(&this.conn), rx);
         this
     }
 
@@ -163,44 +167,7 @@ impl PsqConnection {
             },
         }
 
-        crate::send_quic_packets(&self.conn, &self.socket).await;
-    }
-
-
-    fn timeout_watcher(this: Arc<Mutex<Self>>, mut rx: watch::Receiver<Option<Duration>>) {
-        tokio::spawn(async move {
-            loop {
-                let duration = *rx.borrow_and_update();
-                // if we do not have timeout to set, sleep for 100 years.
-                // Maybe someday we have proper implementation.
-                let sleep_future = sleep(duration.unwrap_or(Duration::from_secs(100 * 365 * 24 * 60 * 60)));
-                tokio::pin!(sleep_future);
-
-                tokio::select! {
-                    _ = &mut sleep_future => {
-                        let mut locked = this.lock().await;
-                        locked.on_timeout().await;
-                        // Optionally break or restart loop
-                        break;
-                    }
-                    changed = rx.changed() => {
-                        if changed.is_ok() {
-                            // New duration was received, loop will recreate sleep
-                            println!("[Watcher] Timeout changed to {:?}", *rx.borrow());
-                            continue;
-                        } else {
-                            break; // channel closed
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-
-    async fn on_timeout(&mut self) {
-        debug!("timeout occurred");
-        self.conn.lock().await.on_timeout();
+        send_quic_packets(&self.conn, &self.socket).await;
     }
 
 

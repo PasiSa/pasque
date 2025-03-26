@@ -9,10 +9,13 @@ use ring::rand::SystemRandom;
 use tokio::{
     net::UdpSocket,
     sync::{watch, Mutex},
-    time::{sleep, Duration},
+    time::Duration,
 };
 
-use crate::stream::PsqStream;
+use crate::{
+    stream::PsqStream,
+    util::{send_quic_packets, timeout_watcher},
+};
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -551,7 +554,7 @@ impl PsqServer {
                 timeout_tx: tx,
                 psqstream: None,
             };
-            Self::timeout_watcher(Arc::clone(&client.conn), rx);
+            timeout_watcher(Arc::clone(&client.conn), rx);
 
             self.clients.insert(scid.clone(), client);
             self.clients.get_mut(&scid).unwrap()
@@ -579,38 +582,6 @@ impl PsqServer {
         // Garbage collect closed connections.
         self.collect_garbage().await;
 
-    }
-
-
-    fn timeout_watcher(conn: Arc<Mutex<quiche::Connection>>, mut rx: watch::Receiver<Option<Duration>>) {
-        tokio::spawn(async move {
-            loop {
-                let duration = *rx.borrow_and_update();
-                // if we do not have timeout to set, sleep for 100 years.
-                // Maybe someday we have proper implementation.
-                let sleep_future = sleep(duration.unwrap_or(Duration::from_secs(100 * 365 * 24 * 60 * 60)));
-                tokio::pin!(sleep_future);
-
-                tokio::select! {
-                    _ = &mut sleep_future => {
-                        debug!("timeout occurred");
-                        let mut locked = conn.lock().await;
-                        locked.on_timeout();
-                        // TODO: Should be prepared to send packets triggered by timeout
-                        break;
-                    }
-                    changed = rx.changed() => {
-                        if changed.is_ok() {
-                            // New duration was received, loop will recreate sleep
-                            debug!("[Watcher] Timeout changed to {:?}", *rx.borrow());
-                            continue;
-                        } else {
-                            break; // channel closed
-                        }
-                    }
-                }
-            }
-        });
     }
 
 
@@ -642,7 +613,7 @@ impl PsqServer {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in self.clients.values_mut() {
-            crate::send_quic_packets(&client.conn, &self.socket).await;
+            send_quic_packets(&client.conn, &self.socket).await;
         }
     }
 

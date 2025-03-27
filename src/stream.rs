@@ -13,39 +13,52 @@ use tokio::{
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
 
+use crate::connection::PsqConnection;
 use crate::util::{hdrs_to_strings, send_quic_packets};
 
 
 /// One HTTP/3 stream established with CONNECT request.
 /// Contains one proxied session/tunnel.
-pub struct PsqStream {
+pub struct IpStream {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
 }
 
-impl PsqStream {
+impl IpStream {
 
     /// Sends an HTTP/3 CONNECT request to given QUIC connection, and
-    /// returns created PsqStream object in response that can be used
+    /// returns created IpStream object in response that can be used
     /// for further tunnel/proxy operations.
-    pub fn h3_request(
-        h3_conn: &mut quiche::h3::Connection,
-        conn: &mut quiche::Connection,
-        url: &url::Url)
-    -> PsqStream {
+    /// Blocks until response to CONNECT request is processed.
+    /// 
+    /// `urlstr` is URL path of the IP proxy endpoint at server. It is
+    /// appended to the base URL used when establishing connection.
+    pub async fn connect<'a>(pconn: &'a mut PsqConnection, urlstr: &str) -> &'a IpStream {
+        let url = pconn.get_url().join(urlstr).unwrap();
         let req = Self::prepare_request(&url);
         info!("sending HTTP request {:?}", req);
 
-        let stream_id = h3_conn
-            .send_request(conn, &req, true).unwrap();
+        let stream_id: u64;
+        {
+            let a = pconn.connection();
+            let mut conn = a.lock().await;
+            let h3_conn = pconn.h3_connection().as_mut().unwrap();
 
-        PsqStream { stream_id, tunwriter: None }
+            stream_id = h3_conn
+                .send_request(&mut *conn, &req, true).unwrap();
+        }  // release pconn lock
 
+        pconn.add_stream( stream_id, IpStream { stream_id, tunwriter: None } ).await
     }
 
 
-    pub fn new(stream_id: u64) -> PsqStream {
-        PsqStream { stream_id, tunwriter: None }
+    pub fn is_ready(&self) -> bool {
+        self.tunwriter.is_some()
+    }
+
+
+    pub fn new(stream_id: u64) -> IpStream {
+        IpStream { stream_id, tunwriter: None }
     }
 
 
@@ -204,6 +217,7 @@ impl PsqStream {
         ]
     }
 
+
     // Sends one HTTP/3 datagram
     fn send_h3_dgram(conn: &mut quiche::Connection, stream_id: u64, buf: &[u8]) -> Result<(), String> {
         // TODO: real, efficient implementation
@@ -221,8 +235,13 @@ impl PsqStream {
         Ok(())
     }
 
+    /// Get Quarter Stream ID from HTTP/3 Datagram.
+    pub (crate) fn get_h3_qstream_id(buf: &[u8]) -> u64 {
+        buf[0] as u64  // TODO: real implememtation using variable ints
+    }
+
     fn make_varint(i: u64) -> Vec<u8> {
-        // TODO: real implementation
+        // TODO: real implementation using variable ints
         let ret: u8 = (i % 63) as u8;
         vec![ret]
     }

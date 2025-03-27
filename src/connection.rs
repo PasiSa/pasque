@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
 
 use ring::rand::*;
 
@@ -10,7 +13,7 @@ use tokio::{
 
 use crate::{
     config::Config,
-    stream::PsqStream,
+    stream::IpStream,
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -24,8 +27,7 @@ pub struct PsqConnection {
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
     url: url::Url,
-    req_sent: bool,
-    psqstream: Option<PsqStream>,
+    streams: HashMap<u64, IpStream>,
     timeout_tx: watch::Sender<Option<Duration>>,
 }
 
@@ -98,20 +100,27 @@ impl PsqConnection {
             panic!("send() failed: {:?}", e);
         }
         let (tx, rx) = watch::channel(conn.timeout());
-        let this = PsqConnection {
+        let mut this = PsqConnection {
             config,
             socket: Arc::new(socket),
             conn: Arc::new(Mutex::new(conn)),
             h3_conn: None,
             url,
-            req_sent: false,
-            psqstream: None,
+            streams: HashMap::new(),
             timeout_tx: tx,
         };
         timeout_watcher(Arc::clone(&this.conn), rx);
+        this.finish_connect().await;   // complete when HTTP/3 connection is set up
+
         this
     }
 
+
+    async fn finish_connect(&mut self) {
+        while self.h3_conn.is_none() {
+            self.process().await;
+        }
+    }
 
     pub async fn process(&mut self) {
         let mut buf = [0; 65535];
@@ -154,10 +163,13 @@ impl PsqConnection {
         match self.conn.lock().await.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                if self.psqstream.is_none() {
+                let ipstream = self.streams.get_mut(
+                    &IpStream::get_h3_qstream_id(&buf)
+                );
+                if ipstream.is_none() {
                     warn!("Datagram received but no matching stream");
                 } else {
-                    self.psqstream.as_mut().unwrap().process_datagram(&buf[..n]).await;
+                    ipstream.unwrap().process_datagram(&buf[..n]).await;
                 }
             },
             Err(e) => {
@@ -171,6 +183,37 @@ impl PsqConnection {
     }
 
 
+    pub fn connection(&mut self) -> Arc<Mutex<quiche::Connection>> {
+        self.conn.clone()
+    }
+
+
+    // TODO: Remove option, replace it with Result with error if connection not specified
+    pub fn h3_connection(&mut self) -> &mut Option<quiche::h3::Connection> {
+        &mut self.h3_conn
+    }
+
+
+    pub fn get_url(&self) -> &url::Url {
+        &self.url
+    }
+
+
+    /// Adds new stream to connection. Blocks until HTTP/3 CONNECT
+    /// negotiaton is complete.
+    pub (crate) async fn add_stream(&mut self, stream_id: u64, stream: IpStream) -> &IpStream {
+        self.streams.insert(stream_id, stream);
+        //self.psqstream = Some(stream);
+
+        // Ensure that the CONNECT request gets actually sent
+        send_quic_packets(&self.conn, &self.socket).await;
+        while !self.streams.get(&stream_id).unwrap().is_ready() {
+            self.process().await
+        }
+        self.streams.get(&stream_id).unwrap()
+    }
+
+
     fn set_timeout(&self, new_duration: Option<Duration>) {
         let _ = self.timeout_tx.send(new_duration);
     }
@@ -179,7 +222,6 @@ impl PsqConnection {
     async fn process_h3(&mut self, buf: &mut [u8]) {
         // Create a new HTTP/3 connection once the QUIC connection is established.
         {
-            debug!("process_h3");
             let mut conn = self.conn.lock().await;
             if conn.is_established() && self.h3_conn.is_none() {
                 let mut h3_config = quiche::h3::Config::new().unwrap();
@@ -190,37 +232,29 @@ impl PsqConnection {
                     .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
                 );
             }
-            debug!("h3_conn exists");
 
             if self.h3_conn.is_none() {
                 // No HTTP/3 connection yet ==> nothing further to process
                 return;
             }
-            // Send HTTP requests once the QUIC connection is established, and until
-            // all requests have been sent.
-            if !self.req_sent {
-                self.psqstream = Some(PsqStream::h3_request(
-                    &mut self.h3_conn.as_mut().unwrap(),
-                    &mut conn,
-                    &self.url,
-                ));
-
-                self.req_sent = true;
-            }
         }
         // Process HTTP/3 events.
         loop {
             match self.poll_helper().await {
-                Ok((_stream_id, event)) => {
-                    // Currently assuming only one stream, will be changed in future
-                    self.psqstream.as_mut().unwrap().process_h3_response(
-                        &mut self.h3_conn.as_mut().unwrap(),
-                        &self.conn,
-                        &self.socket,
-                        &self.config,
-                        event,
-                        buf
-                    ).await;
+                Ok((stream_id, event)) => {
+                    let stream = self.streams.get_mut(&stream_id);
+                    if stream.is_some() {
+                        stream.unwrap().process_h3_response(
+                            &mut self.h3_conn.as_mut().unwrap(),
+                            &self.conn,
+                            &self.socket,
+                            &self.config,
+                            event,
+                            buf
+                        ).await;
+                    } else {
+                        error!("Received unknown stream ID: {}", stream_id);
+                    }
                 },
 
                 Err(quiche::h3::Error::Done) => {

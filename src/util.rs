@@ -19,7 +19,6 @@ pub (crate) async fn send_quic_packets(conn: &Arc<Mutex<quiche::Connection>>, so
             Ok(v) => v,
 
             Err(quiche::Error::Done) => {
-                debug!("{} done writing", conn.trace_id());
                 break;
             },
 
@@ -35,7 +34,7 @@ pub (crate) async fn send_quic_packets(conn: &Arc<Mutex<quiche::Connection>>, so
             panic!("send() failed: {:?}", e);
         }
 
-        debug!("{} written {} bytes", conn.trace_id(), write);
+        //debug!("{} written {} bytes", conn.trace_id(), write);
     }
 }
 

@@ -3,7 +3,7 @@
 extern crate log;
 
 use pasque::{
-    args::Args, config::Config, connection::PsqConnection,
+    args::Args, config::Config, connection::PsqConnection, stream::IpStream,
 };
 
 #[tokio::main]
@@ -23,6 +23,8 @@ async fn main() {
         args.dest(),
         config,
     ).await;
+
+    let _ipstream = IpStream::connect(&mut psqconn, "ip").await;
 
     loop {
         psqconn.process().await;

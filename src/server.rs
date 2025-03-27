@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use crate::{
-    stream::PsqStream,
+    stream::IpStream,
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -32,7 +32,7 @@ struct Client {
     http3_conn: Option<quiche::h3::Connection>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
-    psqstream: Option<PsqStream>,
+    psqstream: Option<IpStream>,  // TODO: change to use HashMap, like in client
 }
 
 impl Client {
@@ -334,7 +334,7 @@ impl Client {
                 }
             },
             Some(b"CONNECT") => {
-                self.psqstream = Some( PsqStream::new(stream_id) );
+                self.psqstream = Some( IpStream::new(stream_id) );
                 self.psqstream.as_mut().unwrap().setup_tun_dev(
                     stream_id,
                     &self.conn,
@@ -589,8 +589,6 @@ impl PsqServer {
         let mut remove_keys = Vec::new();
     
         for (key, client) in &self.clients {
-            debug!("Collecting garbage");
-    
             let conn = client.conn.lock().await;
             if conn.is_closed() {
                 info!(

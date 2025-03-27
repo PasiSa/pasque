@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use bytes::{BytesMut, BufMut};
-
 use futures::stream::{SplitSink, StreamExt};
 use futures::sink::SinkExt;
-
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
 };
-
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
 
-use crate::connection::PsqConnection;
-use crate::util::{hdrs_to_strings, send_quic_packets};
+use crate::{
+    connection::PsqConnection,
+    PsqError,
+    util::{hdrs_to_strings, send_quic_packets},
+};
 
 
 /// One HTTP/3 stream established with CONNECT request.
@@ -33,8 +33,12 @@ impl IpStream {
     /// 
     /// `urlstr` is URL path of the IP proxy endpoint at server. It is
     /// appended to the base URL used when establishing connection.
-    pub async fn connect<'a>(pconn: &'a mut PsqConnection, urlstr: &str) -> &'a IpStream {
-        let url = pconn.get_url().join(urlstr).unwrap();
+    pub async fn connect<'a>(
+        pconn: &'a mut PsqConnection,
+        urlstr: &str,
+    ) -> Result<&'a IpStream, PsqError> {
+
+        let url = pconn.get_url().join(urlstr)?;
         let req = Self::prepare_request(&url);
         info!("sending HTTP request {:?}", req);
 
@@ -45,7 +49,7 @@ impl IpStream {
             let h3_conn = pconn.h3_connection().as_mut().unwrap();
 
             stream_id = h3_conn
-                .send_request(&mut *conn, &req, true).unwrap();
+                .send_request(&mut *conn, &req, true)?;
         }  // release pconn lock
 
         pconn.add_stream( stream_id, IpStream { stream_id, tunwriter: None } ).await
@@ -70,7 +74,7 @@ impl IpStream {
         config: &crate::config::Config,
         event: quiche::h3::Event,
         buf: &mut [u8],
-    ) {
+    ) -> Result<(), PsqError> {
         match event {
             quiche::h3::Event::Headers { list, .. } => {
                 info!(
@@ -87,7 +91,7 @@ impl IpStream {
                     &socket,
                     config.tun_ip_local().to_string(),
                     config.tun_ip_remote().to_string(),
-                ).await;
+                ).await?;
             },
 
             quiche::h3::Event::Data => {
@@ -128,6 +132,7 @@ impl IpStream {
                 info!("GOAWAY");
             },
         }
+        Ok(())
     }
 
 
@@ -138,7 +143,7 @@ impl IpStream {
         origsocket: &Arc::<UdpSocket>,
         tun_ip_local: String,
         tun_ip_remote: String,
-    ) {
+    ) -> Result<(), PsqError> {
         let conn = Arc::clone(origconn);
         let socket = Arc::clone(origsocket);
 
@@ -160,10 +165,14 @@ impl IpStream {
                 while let Some(Ok(packet)) = reader.next().await {
                     debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
                     Self::send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
-                    send_quic_packets(&conn, &socket).await;
+                    if let Err(e) = send_quic_packets(&conn, &socket).await {
+                        error!("Sending QUIC packets failed: {}", e);
+                        break;
+                    }
                 }
             }
         });
+        Ok(())
     }
 
 

@@ -22,11 +22,11 @@ async fn main() {
     let mut psqconn = PsqConnection::connect(
         args.dest(),
         config,
-    ).await;
+    ).await.unwrap();
 
     let _ipstream = IpStream::connect(&mut psqconn, "ip").await;
 
-    loop {
-        psqconn.process().await;
+    while psqconn.process().await.is_ok() {
+        // Just repeat until an error occurs
     }
 }

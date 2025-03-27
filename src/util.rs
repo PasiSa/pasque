@@ -8,10 +8,16 @@ use tokio::{
     time::{sleep, Duration},
 };
 
+use crate::PsqError;
+
 const MAX_DATAGRAM_SIZE: usize = 1350;
 
 
-pub (crate) async fn send_quic_packets(conn: &Arc<Mutex<quiche::Connection>>, socket: &Arc<UdpSocket>) {
+pub (crate) async fn send_quic_packets(
+    conn: &Arc<Mutex<quiche::Connection>>,
+    socket: &Arc<UdpSocket>,
+) -> Result<(), PsqError> {
+
     let mut out = [0; MAX_DATAGRAM_SIZE];
     loop {
         let mut conn = conn.lock().await;
@@ -26,16 +32,18 @@ pub (crate) async fn send_quic_packets(conn: &Arc<Mutex<quiche::Connection>>, so
                 error!("{} send failed: {:?}", conn.trace_id(), e);
 
                 conn.close(false, 0x1, b"fail").ok();
-                break;
+                return Err(PsqError::Quiche(e))
             },
         };
 
         if let Err(e) = socket.send_to(&out[..write], send_info.to).await {
-            panic!("send() failed: {:?}", e);
+            error!("UDP send() failed: {:?}", e);
+            return Err(PsqError::Io(e))
         }
 
         //debug!("{} written {} bytes", conn.trace_id(), write);
     }
+    Ok(())
 }
 
 

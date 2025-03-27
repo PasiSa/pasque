@@ -341,7 +341,7 @@ impl Client {
                     &self.socket,
                     "10.76.0.2".to_string(),  // TODO: read address from config
                     "10.76.0.1".to_string(),  // TODO: read address from config
-                ).await;
+                ).await.unwrap();  // TODO: process error properly
                 return crate::process_connect(request);
             },
 
@@ -611,7 +611,10 @@ impl PsqServer {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in self.clients.values_mut() {
-            send_quic_packets(&client.conn, &self.socket).await;
+            if let Err(e) = send_quic_packets(&client.conn, &self.socket).await {
+                error!("Error sending packets: {}", e);
+                // TODO: Close client connection
+            }
         }
     }
 

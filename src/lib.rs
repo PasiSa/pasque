@@ -2,6 +2,29 @@
 extern crate log;
 
 use quiche::ConnectionId;
+use thiserror::Error;
+
+
+#[derive(Error, Debug)]
+pub enum PsqError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Parse error: {0}")]
+    ParseInt(#[from] std::num::ParseIntError),
+
+    #[error("URL parse error: {0}")]
+    UrlParse(#[from] url::ParseError),
+
+    #[error("QUIC error: {0}")]
+    Quiche(#[from] quiche::Error),
+
+    #[error("HTTP/3 error: {0}")]
+    Http3(#[from] quiche::h3::Error),
+
+    #[error("Custom error: {0}")]
+    Custom(String),
+}
 
 
 pub fn process_connect(_request: &[quiche::h3::Header]) -> (Vec<quiche::h3::Header>, Vec<u8>) {

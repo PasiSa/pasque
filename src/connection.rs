@@ -13,6 +13,7 @@ use tokio::{
 
 use crate::{
     config::Config,
+    PsqError,
     stream::IpStream,
     util::{send_quic_packets, timeout_watcher},
 };
@@ -32,7 +33,11 @@ pub struct PsqConnection {
 }
 
 impl PsqConnection {
-    pub async fn connect(urlstr: &str, config: Config) -> PsqConnection {
+    pub async fn connect(
+        urlstr: &str,
+        config: Config,
+    ) -> Result<PsqConnection, PsqError> {
+
         let url = url::Url::parse(&urlstr).unwrap();
 
         // Resolve server address.
@@ -110,19 +115,21 @@ impl PsqConnection {
             timeout_tx: tx,
         };
         timeout_watcher(Arc::clone(&this.conn), rx);
-        this.finish_connect().await;   // complete when HTTP/3 connection is set up
+        this.finish_connect().await?;   // complete when HTTP/3 connection is set up
 
-        this
+        Ok(this)
     }
 
 
-    async fn finish_connect(&mut self) {
+    async fn finish_connect(&mut self) -> Result<(), PsqError> {
         while self.h3_conn.is_none() {
-            self.process().await;
+            self.process().await?;
         }
+        Ok(())
     }
 
-    pub async fn process(&mut self) {
+
+    pub async fn process(&mut self) -> Result<(), PsqError> {
         let mut buf = [0; 65535];
 
         self.set_timeout(self.conn.lock().await.timeout());
@@ -148,15 +155,15 @@ impl PsqConnection {
 
             Err(e) => {
                 error!("recv failed: {:?}", e);
-                return;
+                return Err(PsqError::Quiche(e))
             },
         };
 
         if self.conn.lock().await.is_closed() {
             info!("connection closed, {:?}", self.conn.lock().await.stats());
-            return;
+            return Ok(())
         }
-        self.process_h3(&mut buf).await;
+        self.process_h3(&mut buf).await?;
 
         // TODO: process datagrams properly
         let mut buf = [0; 10000];
@@ -179,7 +186,7 @@ impl PsqConnection {
             },
         }
 
-        send_quic_packets(&self.conn, &self.socket).await;
+        send_quic_packets(&self.conn, &self.socket).await
     }
 
 
@@ -201,16 +208,20 @@ impl PsqConnection {
 
     /// Adds new stream to connection. Blocks until HTTP/3 CONNECT
     /// negotiaton is complete.
-    pub (crate) async fn add_stream(&mut self, stream_id: u64, stream: IpStream) -> &IpStream {
+    pub (crate) async fn add_stream(
+        &mut self,
+        stream_id: u64,
+        stream: IpStream,
+    ) -> Result<&IpStream, PsqError> {
+
         self.streams.insert(stream_id, stream);
-        //self.psqstream = Some(stream);
 
         // Ensure that the CONNECT request gets actually sent
-        send_quic_packets(&self.conn, &self.socket).await;
+        send_quic_packets(&self.conn, &self.socket).await?;
         while !self.streams.get(&stream_id).unwrap().is_ready() {
-            self.process().await
+            self.process().await?;
         }
-        self.streams.get(&stream_id).unwrap()
+        Ok(self.streams.get(&stream_id).unwrap())
     }
 
 
@@ -219,7 +230,7 @@ impl PsqConnection {
     }
 
 
-    async fn process_h3(&mut self, buf: &mut [u8]) {
+    async fn process_h3(&mut self, buf: &mut [u8]) -> Result<(), PsqError> {
         // Create a new HTTP/3 connection once the QUIC connection is established.
         {
             let mut conn = self.conn.lock().await;
@@ -235,7 +246,7 @@ impl PsqConnection {
 
             if self.h3_conn.is_none() {
                 // No HTTP/3 connection yet ==> nothing further to process
-                return;
+                return Ok(());
             }
         }
         // Process HTTP/3 events.
@@ -251,20 +262,20 @@ impl PsqConnection {
                             &self.config,
                             event,
                             buf
-                        ).await;
+                        ).await?;
                     } else {
                         error!("Received unknown stream ID: {}", stream_id);
+                        continue;
                     }
                 },
 
                 Err(quiche::h3::Error::Done) => {
-                    break;
+                    return Ok(())
                 },
 
                 Err(e) => {
                     error!("HTTP/3 processing failed: {:?}", e);
-
-                    break;
+                    return Err(PsqError::Http3(e))
                 },
             }
         }

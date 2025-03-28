@@ -85,5 +85,5 @@ pub mod args;
 pub mod config;
 pub mod connection;
 pub mod server;
-pub mod stream;
+pub mod iptunnel;
 pub mod util;

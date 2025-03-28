@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use crate::{
-    stream::IpStream,
+    iptunnel::IpTunnel,
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -32,7 +32,7 @@ struct Client {
     http3_conn: Option<quiche::h3::Connection>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
-    streams: HashMap<u64, IpStream>,
+    streams: HashMap<u64, IpTunnel>,
 }
 
 impl Client {
@@ -83,7 +83,7 @@ impl Client {
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match IpStream::process_h3_capsule(&buf) {
+                let (stream_id, offset) = match IpTunnel::process_h3_capsule(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);
@@ -343,7 +343,7 @@ impl Client {
                 }
             },
             Some(b"CONNECT") => {
-                self.streams.insert(stream_id, IpStream::new(stream_id));
+                self.streams.insert(stream_id, IpTunnel::new(stream_id));
                 let stream = self.streams.get_mut(&stream_id).unwrap();
                 stream.setup_tun_dev(
                     stream_id,

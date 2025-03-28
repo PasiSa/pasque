@@ -14,7 +14,7 @@ use tokio::{
 use crate::{
     config::Config,
     PsqError,
-    stream::IpStream,
+    iptunnel::IpTunnel,
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -28,7 +28,7 @@ pub struct PsqConnection {
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
     url: url::Url,
-    streams: HashMap<u64, IpStream>,
+    streams: HashMap<u64, IpTunnel>,
     timeout_tx: watch::Sender<Option<Duration>>,
 }
 
@@ -170,7 +170,7 @@ impl PsqConnection {
         match self.conn.lock().await.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match IpStream::process_h3_capsule(&buf) {
+                let (stream_id, offset) = match IpTunnel::process_h3_capsule(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);
@@ -178,11 +178,11 @@ impl PsqConnection {
                     },
                 };
 
-                let ipstream = self.streams.get_mut(&stream_id);
-                if ipstream.is_none() {
+                let iptunnel = self.streams.get_mut(&stream_id);
+                if iptunnel.is_none() {
                     warn!("Datagram received but no matching stream");
                 } else {
-                    ipstream.unwrap().process_datagram(&buf[offset..n]).await;
+                    iptunnel.unwrap().process_datagram(&buf[offset..n]).await;
                 }
             },
             Err(e) => {
@@ -217,8 +217,8 @@ impl PsqConnection {
     pub (crate) async fn add_stream(
         &mut self,
         stream_id: u64,
-        stream: IpStream,
-    ) -> Result<&IpStream, PsqError> {
+        stream: IpTunnel,
+    ) -> Result<&IpTunnel, PsqError> {
 
         self.streams.insert(stream_id, stream);
 

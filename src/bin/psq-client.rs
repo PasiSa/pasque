@@ -3,7 +3,7 @@
 extern crate log;
 
 use pasque::{
-    args::Args, config::Config, connection::PsqConnection, stream::IpStream,
+    args::Args, config::Config, connection::PsqConnection, iptunnel::IpTunnel,
 };
 
 #[tokio::main]
@@ -24,7 +24,7 @@ async fn main() {
         config,
     ).await.unwrap();
 
-    let _ipstream = IpStream::connect(&mut psqconn, "ip").await;
+    let _iptunnel = IpTunnel::connect(&mut psqconn, "ip").await;
 
     while psqconn.process().await.is_ok() {
         // Just repeat until an error occurs

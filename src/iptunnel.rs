@@ -19,15 +19,15 @@ use crate::{
 
 /// One HTTP/3 stream established with CONNECT request.
 /// Contains one proxied session/tunnel.
-pub struct IpStream {
+pub struct IpTunnel {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
 }
 
-impl IpStream {
+impl IpTunnel {
 
     /// Sends an HTTP/3 CONNECT request to given QUIC connection, and
-    /// returns created IpStream object in response that can be used
+    /// returns created IpTunnel object in response that can be used
     /// for further tunnel/proxy operations.
     /// Blocks until response to CONNECT request is processed.
     /// 
@@ -36,7 +36,7 @@ impl IpStream {
     pub async fn connect<'a>(
         pconn: &'a mut PsqConnection,
         urlstr: &str,
-    ) -> Result<&'a IpStream, PsqError> {
+    ) -> Result<&'a IpTunnel, PsqError> {
 
         let url = pconn.get_url().join(urlstr)?;
         let req = Self::prepare_request(&url);
@@ -52,7 +52,7 @@ impl IpStream {
                 .send_request(&mut *conn, &req, true)?;
         }  // release pconn lock
 
-        pconn.add_stream( stream_id, IpStream { stream_id, tunwriter: None } ).await
+        pconn.add_stream( stream_id, IpTunnel { stream_id, tunwriter: None } ).await
     }
 
 
@@ -61,8 +61,8 @@ impl IpStream {
     }
 
 
-    pub fn new(stream_id: u64) -> IpStream {
-        IpStream { stream_id, tunwriter: None }
+    pub fn new(stream_id: u64) -> IpTunnel {
+        IpTunnel { stream_id, tunwriter: None }
     }
 
 

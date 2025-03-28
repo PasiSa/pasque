@@ -32,7 +32,7 @@ struct Client {
     http3_conn: Option<quiche::h3::Connection>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
-    psqstream: Option<IpStream>,  // TODO: change to use HashMap, like in client
+    streams: HashMap<u64, IpStream>,
 }
 
 impl Client {
@@ -83,10 +83,19 @@ impl Client {
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                if self.psqstream.is_none() {
+                let (stream_id, offset) = match IpStream::process_h3_capsule(&buf) {
+                    Ok((stream, off)) => (stream, off),
+                    Err(e) => {
+                        error!("Error processing HTTP/3 capsule: {}", e);
+                        return;
+                    },
+                };
+
+                let ipstream = self.streams.get_mut(&stream_id);
+                if ipstream.is_none() {
                     warn!("Datagram received but no matching stream");
                 } else {
-                    self.psqstream.as_mut().unwrap().process_datagram(&buf[..n]).await;
+                    ipstream.unwrap().process_datagram(&buf[offset..n]).await;
                 }
             },
             Err(e) => {
@@ -334,8 +343,9 @@ impl Client {
                 }
             },
             Some(b"CONNECT") => {
-                self.psqstream = Some( IpStream::new(stream_id) );
-                self.psqstream.as_mut().unwrap().setup_tun_dev(
+                self.streams.insert(stream_id, IpStream::new(stream_id));
+                let stream = self.streams.get_mut(&stream_id).unwrap();
+                stream.setup_tun_dev(
                     stream_id,
                     &self.conn,
                     &self.socket,
@@ -552,7 +562,7 @@ impl PsqServer {
                 http3_conn: None,
                 partial_responses: HashMap::new(),
                 timeout_tx: tx,
-                psqstream: None,
+                streams: HashMap::new(),
             };
             timeout_watcher(Arc::clone(&client.conn), rx);
 

@@ -13,7 +13,7 @@ use tun::AsyncDevice;
 use crate::{
     connection::PsqConnection,
     PsqError,
-    util::{hdrs_to_strings, send_quic_packets},
+    util::{hdrs_to_strings, send_quic_packets, MAX_DATAGRAM_SIZE},
 };
 
 
@@ -178,12 +178,32 @@ impl IpStream {
 
     pub(crate) async fn process_datagram(&mut self, buf: &[u8]) {
         if self.tunwriter.is_some() {
-            debug!("Writing to TUN: {}", Self::packet_output(&buf[2..], buf.len()-2));
-            let packet = BytesMut::from(&buf[2..]);
+            debug!("Writing to TUN: {}", Self::packet_output(&buf, buf.len()));
+            let packet = BytesMut::from(&buf[..]);
             if let Err(e) = self.tunwriter.as_mut().unwrap().send(packet).await {
                 error!("Send failed: {}", e);
             }
         }
+    }
+
+
+    /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
+    /// Context ID and capsule length are ignored.
+    pub(crate) fn process_h3_capsule(buf: &[u8]) -> Result<(u64, usize), PsqError>{
+        let mut octets = octets::Octets::with_slice(buf);
+
+        if octets.get_u8()? != 0x00 {  // TODO: use enums instead of numbers
+            // Not HTTP datagram
+            return Err(PsqError::H3Capsule("Not HTTP Datagram".to_string()))
+        }
+
+        let _length = octets.get_varint()?;  // not in use at the moment
+
+        let stream_id: u64 = octets.get_varint()? * 4;
+
+        let _context_id = octets.get_varint()?;  // not in use at the moment
+
+        Ok((stream_id, octets.off()))
     }
 
 
@@ -227,32 +247,41 @@ impl IpStream {
     }
 
 
-    // Sends one HTTP/3 datagram
-    fn send_h3_dgram(conn: &mut quiche::Connection, stream_id: u64, buf: &[u8]) -> Result<(), String> {
-        // TODO: real, efficient implementation
+    /// Sends one HTTP/3 Datagram Capsule.
+    fn send_h3_dgram(
+        conn: &mut quiche::Connection,
+        stream_id: u64,
+        buf: &[u8],
+    ) -> Result<(), PsqError> {
         
-        // Quarter stream ID
-        let mut data = Self::make_varint(stream_id);
-        
-        // Context ID = 0
-        data.push(0);
+        // currently we limit to stream IDs of max 16383 * 4
+        //let mut data: Vec<u8> = Vec::with_capacity(6 + buf.len());
+        let mut data: [u8; MAX_DATAGRAM_SIZE] = [0; MAX_DATAGRAM_SIZE];
+        let off = 6;
+
+        {
+            let mut octets = octets::OctetsMut::with_slice(data.as_mut_slice());
+
+            // Datagram capsule type (Datagram: 0x00)  TODO: Use enums
+            octets.put_varint_with_len(0x00, 1)?;
+
+            // Datagram capsule length
+            octets.put_varint_with_len(buf.len() as u64, 2)?;
+
+            // Quarter stream ID
+            // Currently supporting only 2-byte stream IDs, to be extended later
+            octets.put_varint_with_len(stream_id / 4, 2)?;
+
+            // Context ID = 0
+            octets.put_varint_with_len(0, 1)?;
+        }
 
         // Data
-        data.extend(buf);
+        let end = off + buf.len();
+        data[off..end].copy_from_slice(buf);
 
-        conn.dgram_send(&data).unwrap();
+        conn.dgram_send(&data[..end])?;
         Ok(())
-    }
-
-    /// Get Quarter Stream ID from HTTP/3 Datagram.
-    pub (crate) fn get_h3_qstream_id(buf: &[u8]) -> u64 {
-        buf[0] as u64  // TODO: real implememtation using variable ints
-    }
-
-    fn make_varint(i: u64) -> Vec<u8> {
-        // TODO: real implementation using variable ints
-        let ret: u8 = (i % 63) as u8;
-        vec![ret]
     }
 }
 

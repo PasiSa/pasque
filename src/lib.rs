@@ -10,8 +10,8 @@ pub enum PsqError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Parse error: {0}")]
-    ParseInt(#[from] std::num::ParseIntError),
+    #[error("HTTP/3 capsule error: {0}")]
+    H3Capsule(String),
 
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -21,6 +21,9 @@ pub enum PsqError {
 
     #[error("HTTP/3 error: {0}")]
     Http3(#[from] quiche::h3::Error),
+
+    #[error("Octets buffer error: {0}")]
+    Octets(#[from] octets::BufferTooShortError),
 
     #[error("Custom error: {0}")]
     Custom(String),

@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::PsqError;
 
-const MAX_DATAGRAM_SIZE: usize = 1350;
+pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
 
 pub (crate) async fn send_quic_packets(

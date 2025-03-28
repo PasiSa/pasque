@@ -165,18 +165,24 @@ impl PsqConnection {
         }
         self.process_h3(&mut buf).await?;
 
-        // TODO: process datagrams properly
+        // Process Datagrams
         let mut buf = [0; 10000];
         match self.conn.lock().await.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let ipstream = self.streams.get_mut(
-                    &IpStream::get_h3_qstream_id(&buf)
-                );
+                let (stream_id, offset) = match IpStream::process_h3_capsule(&buf) {
+                    Ok((stream, off)) => (stream, off),
+                    Err(e) => {
+                        error!("Error processing HTTP/3 capsule: {}", e);
+                        return send_quic_packets(&self.conn, &self.socket).await
+                    },
+                };
+
+                let ipstream = self.streams.get_mut(&stream_id);
                 if ipstream.is_none() {
                     warn!("Datagram received but no matching stream");
                 } else {
-                    ipstream.unwrap().process_datagram(&buf[..n]).await;
+                    ipstream.unwrap().process_datagram(&buf[offset..n]).await;
                 }
             },
             Err(e) => {

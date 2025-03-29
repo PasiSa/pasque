@@ -13,8 +13,12 @@ use tokio::{
 };
 
 use crate::{
-    iptunnel::IpTunnel,
-    util::{send_quic_packets, timeout_watcher},
+    iptunnel::{IpEndpoint, IpTunnel},
+    util::{
+        build_h3_headers,
+        send_quic_packets,
+        timeout_watcher,
+    },
 };
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -26,6 +30,9 @@ struct PartialResponse {
     written: usize,
 }
 
+
+type Endpoints = HashMap<String, IpEndpoint>;
+
 struct Client {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
@@ -33,6 +40,8 @@ struct Client {
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
     streams: HashMap<u64, IpTunnel>,
+    endpoints: Arc<Mutex<Endpoints>>,
+    //endpoints: &'p Endpoints,
 }
 
 impl Client {
@@ -310,25 +319,47 @@ impl Client {
         request: &[quiche::h3::Header],
     ) -> (Vec<quiche::h3::Header>, Vec<u8>) {
 
-        let mut file_path = std::path::PathBuf::from(root);
+        let mut _file_path = std::path::PathBuf::from(root);  // TODO: will be used later
         let mut path = std::path::Path::new("");
-        let mut method = None;
+        let mut _method = None;  // TODO: will be used later
 
         // Look for the request's path and method.
         for hdr in request {
             match hdr.name() {
-                b":path" =>
-                    path = std::path::Path::new(
-                        std::str::from_utf8(hdr.value()).unwrap(),
-                    ),
+                b":path" => {
+                    let s = std::str::from_utf8(hdr.value());
+                    if s.is_err() {
+                        return build_h3_headers(400, "Invalid path!")
+                    }
+                    path = std::path::Path::new(s.unwrap())
+                },
 
-                b":method" => method = Some(hdr.value()),
+                b":method" => _method = Some(hdr.value()),
 
                 _ => (),
             }
         }
 
-        let (status, body) = match method {
+        let ep = path.components().nth(1);
+        if ep.is_none() {
+            return build_h3_headers(404, "Not Found (empty path)")
+        }
+        let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
+        match self.endpoints.lock().await.get(&string) {
+            Some(endpoint) => {
+               match endpoint.process_request(&self.conn, &self.socket, stream_id).await {
+                    Ok((stream, header, body)) => {
+                        self.streams.insert(stream_id, stream);
+                        (header, body)
+                    },
+                    Err(e) => e 
+                }
+            }
+            None => build_h3_headers(404, format!("Not Found: {}", string).as_str()),
+        }
+
+        // TODO: the below is temorarily left in. Will be removed soon
+        /*let (status, body) = match method {
             Some(b"GET") => {
                 for c in path.components() {
                     if let std::path::Component::Normal(v) = c {
@@ -352,7 +383,7 @@ impl Client {
                     "10.76.0.2".to_string(),  // TODO: read address from config
                     "10.76.0.1".to_string(),  // TODO: read address from config
                 ).await.unwrap();  // TODO: process error properly
-                return crate::process_connect(request);
+                return Ok(crate::process_connect(request))
             },
 
             _ => (405, Vec::new()),
@@ -360,14 +391,14 @@ impl Client {
 
         let headers = vec![
             quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", b"quiche"),
+            quiche::h3::Header::new(b"server", b"pasque"),
             quiche::h3::Header::new(
                 b"content-length",
                 body.len().to_string().as_bytes(),
             ),
         ];
 
-        (headers, body)
+        Ok((headers, body))*/
     }
 }
 
@@ -379,6 +410,7 @@ pub struct PsqServer {
     qconfig: quiche::Config,
     conn_id_seed: ring::hmac::Key,
     clients: ClientMap,
+    endpoints: Arc<Mutex<Endpoints>>,
 }
 
 impl PsqServer {
@@ -424,6 +456,7 @@ impl PsqServer {
             qconfig,
             conn_id_seed,
             clients: ClientMap::new(),
+            endpoints: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -482,11 +515,6 @@ impl PsqServer {
                 let out = &out[..len];
 
                 if let Err(e) = self.socket.send_to(out, from).await {
-                    /*if e.kind() == std::io::ErrorKind::WouldBlock {
-                        debug!("send() would block");
-                        break;
-                    }*/
-
                     panic!("send() failed: {:?}", e);
                 }
                 return;
@@ -563,6 +591,7 @@ impl PsqServer {
                 partial_responses: HashMap::new(),
                 timeout_tx: tx,
                 streams: HashMap::new(),
+                endpoints: Arc::clone(&self.endpoints),
             };
             timeout_watcher(Arc::clone(&client.conn), rx);
 
@@ -592,6 +621,12 @@ impl PsqServer {
         // Garbage collect closed connections.
         self.collect_garbage().await;
 
+    }
+
+
+    /// Add new endpoint to the server with given path.
+    pub async fn add_endpoint(&mut self, path: &str, endpoint: IpEndpoint) {
+        self.endpoints.lock().await.insert(path.to_string(), endpoint);
     }
 
 

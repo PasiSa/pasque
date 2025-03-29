@@ -19,6 +19,7 @@ use crate::{
 
 /// One HTTP/3 stream established with CONNECT request.
 /// Contains one proxied session/tunnel.
+/// See [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484) for more information.
 pub struct IpTunnel {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
@@ -66,7 +67,7 @@ impl IpTunnel {
     }
 
 
-    pub async fn process_h3_response(
+    pub (crate) async fn process_h3_response(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
@@ -75,6 +76,7 @@ impl IpTunnel {
         event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
+
         match event {
             quiche::h3::Event::Headers { list, .. } => {
                 info!(
@@ -85,12 +87,14 @@ impl IpTunnel {
                 // TODO: check that response is 200 OK
                 // OK response to H3 connect request
                 // => bring up the TUN interface
+                let local_addr = config.tun_ip_local().to_string();
+                let remote_addr = config.tun_ip_remote().to_string();
                 self.setup_tun_dev(
                     self.stream_id,
                     &conn,
                     &socket,
-                    config.tun_ip_local().to_string(),
-                    config.tun_ip_remote().to_string(),
+                    &local_addr,
+                    &remote_addr,
                 ).await?;
             },
 
@@ -141,8 +145,8 @@ impl IpTunnel {
         stream_id: u64,
         origconn: &Arc<Mutex<quiche::Connection>>,
         origsocket: &Arc::<UdpSocket>,
-        tun_ip_local: String,
-        tun_ip_remote: String,
+        tun_ip_local: &String,
+        tun_ip_remote: &String,
     ) -> Result<(), PsqError> {
         let conn = Arc::clone(origconn);
         let socket = Arc::clone(origsocket);
@@ -150,8 +154,8 @@ impl IpTunnel {
         let mut config = tun::Configuration::default();
         config
             .tun_name("tun0")   // Interface name
-            .address(&tun_ip_local)  // Assign IP to the interface
-            .destination(&tun_ip_remote) // Peer address
+            .address(tun_ip_local)  // Assign IP to the interface
+            .destination(tun_ip_remote) // Peer address
             .netmask("255.255.255.0") // Subnet mask
             .up(); // Bring interface up
     
@@ -311,5 +315,57 @@ impl Encoder<BytesMut> for IpPacketCodec {
     fn encode(&mut self, item: BytesMut, dst: &mut BytesMut) -> Result<(), std::io::Error> {
         dst.put(item);
         Ok(())
+    }
+}
+
+/// Endpoint for IP tunnel over HTTP/3
+/// (see [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
+pub struct IpEndpoint {
+    local_addr: String,
+    remote_addr: String,
+}
+
+impl IpEndpoint {
+    pub fn new(local_addr: &str, remote_addr: &str) -> IpEndpoint {
+        IpEndpoint {
+            local_addr: local_addr.to_string(),
+            remote_addr: remote_addr.to_string(),
+        }
+    }
+
+
+    pub (crate) async fn process_request(
+        &self,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        stream_id: u64,
+    ) -> Result<(IpTunnel, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
+
+        // TODO: Check that method is CONNECT, and other request headers
+        debug!("Starting IP tunnel");
+        let mut iptunnel = IpTunnel::new(stream_id);
+        //let stream = self.streams.get_mut(&stream_id).unwrap();
+        iptunnel.setup_tun_dev(
+            stream_id,
+            &conn,
+            &socket,
+            &self.local_addr,  // TODO: read address from config
+            &self.remote_addr,  // TODO: read address from config
+        ).await.unwrap();  // TODO: process error properly
+
+        let (status, body) = (200, Vec::from("Moi".as_bytes()));
+    
+        // TODO: parse request
+    
+        let headers = vec![
+            quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
+            quiche::h3::Header::new(b"server", b"quiche"),
+            quiche::h3::Header::new(b"capsule-protocol", b"?1"),
+            quiche::h3::Header::new(
+                b"content-length",
+                body.len().to_string().as_bytes(),
+            ),
+        ];
+        Ok((iptunnel, headers, body))
     }
 }

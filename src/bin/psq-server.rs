@@ -1,7 +1,7 @@
 
 extern crate log;
 
-use pasque::server::PsqServer;
+use pasque::{iptunnel::IpEndpoint, server::PsqServer};
 
 
 #[tokio::main]
@@ -19,6 +19,7 @@ async fn main() {
     }
 
     let mut psqserver = PsqServer::start("0.0.0.0:4433").await;
+    psqserver.add_endpoint("ip", IpEndpoint::new("10.76.0.1", "10.76.0.2")).await;
 
     loop {
         psqserver.process().await;

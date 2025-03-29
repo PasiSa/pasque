@@ -25,27 +25,11 @@ pub enum PsqError {
     #[error("Octets buffer error: {0}")]
     Octets(#[from] octets::BufferTooShortError),
 
+    #[error("UTF8 parsing error: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
+
     #[error("Custom error: {0}")]
     Custom(String),
-}
-
-
-pub fn process_connect(_request: &[quiche::h3::Header]) -> (Vec<quiche::h3::Header>, Vec<u8>) {
-    debug!("CONNECT received!");
-    let (status, body) = (200, Vec::from("Moi".as_bytes()));
-
-    // TODO: parse request
-
-    let headers = vec![
-        quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-        quiche::h3::Header::new(b"server", b"quiche"),
-        quiche::h3::Header::new(b"capsule-protocol", b"?1"),
-        quiche::h3::Header::new(
-            b"content-length",
-            body.len().to_string().as_bytes(),
-        ),
-    ];
-    (headers, body)
 }
 
 

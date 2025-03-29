@@ -79,6 +79,19 @@ pub (crate) fn timeout_watcher(conn: Arc<Mutex<quiche::Connection>>, mut rx: wat
 }
 
 
+pub (crate) fn build_h3_headers(status: i32, msg: &str) -> (Vec<quiche::h3::Header>, Vec<u8>) {
+    let headers = vec![
+        quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
+        quiche::h3::Header::new(b"server", b"pasque"),
+        quiche::h3::Header::new(
+            b"content-length",
+            msg.len().to_string().as_bytes(),
+        ),
+    ];
+    (headers, msg.as_bytes().to_vec())
+}
+
+
 pub (crate) fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
     hdrs.iter()
         .map(|h| {

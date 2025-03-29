@@ -8,7 +8,7 @@ use tokio::{
     time::{sleep, Duration},
 };
 
-use crate::PsqError;
+use crate::{PsqError, VERSION_IDENTIFICATION};
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -82,7 +82,7 @@ pub (crate) fn timeout_watcher(conn: Arc<Mutex<quiche::Connection>>, mut rx: wat
 pub (crate) fn build_h3_headers(status: i32, msg: &str) -> (Vec<quiche::h3::Header>, Vec<u8>) {
     let headers = vec![
         quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-        quiche::h3::Header::new(b"server", b"pasque"),
+        quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
         quiche::h3::Header::new(
             b"content-length",
             msg.len().to_string().as_bytes(),

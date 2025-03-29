@@ -5,6 +5,9 @@ use quiche::ConnectionId;
 use thiserror::Error;
 
 
+const VERSION_IDENTIFICATION: &str = env!("CARGO_PKG_VERSION");
+
+
 #[derive(Error, Debug)]
 pub enum PsqError {
     #[error("IO error: {0}")]

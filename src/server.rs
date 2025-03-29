@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use async_trait::async_trait;
 use quiche::h3::NameValue;
 use ring::rand::SystemRandom;
 use tokio::{
@@ -13,7 +14,8 @@ use tokio::{
 };
 
 use crate::{
-    iptunnel::{IpEndpoint, IpTunnel},
+    iptunnel::IpTunnel,
+    VERSION_IDENTIFICATION,
     util::{
         build_h3_headers,
         send_quic_packets,
@@ -31,7 +33,7 @@ struct PartialResponse {
 }
 
 
-type Endpoints = HashMap<String, IpEndpoint>;
+type Endpoints = HashMap<String, Box<dyn Endpoint>>;
 
 struct Client {
     socket: Arc<UdpSocket>,
@@ -39,9 +41,8 @@ struct Client {
     http3_conn: Option<quiche::h3::Connection>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
-    streams: HashMap<u64, IpTunnel>,
+    streams: HashMap<u64, Box<dyn PsqStream>>,
     endpoints: Arc<Mutex<Endpoints>>,
-    //endpoints: &'p Endpoints,
 }
 
 impl Client {
@@ -87,8 +88,7 @@ impl Client {
             self.http3_conn = Some(h3_conn);
         }
 
-        // TODO: process datagrams properly
-        let mut buf = [0; 10000];
+        let mut buf = [0; 10000];  // TODO: change proper size
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
@@ -100,11 +100,11 @@ impl Client {
                     },
                 };
 
-                let ipstream = self.streams.get_mut(&stream_id);
-                if ipstream.is_none() {
-                    warn!("Datagram received but no matching stream");
+                let stream = self.streams.get_mut(&stream_id);
+                if stream.is_none() {
+                    warn!("Datagram received but no matching stream ID: {}", stream_id);
                 } else {
-                    ipstream.unwrap().process_datagram(&buf[offset..n]).await;
+                    stream.unwrap().process_datagram(&buf[offset..n]).await;
                 }
             },
             Err(e) => {
@@ -415,6 +415,7 @@ pub struct PsqServer {
 
 impl PsqServer {
     pub async fn start(address: &str) -> PsqServer {
+        info!("Pasque version {} starting", VERSION_IDENTIFICATION);
         let socket =
             tokio::net::UdpSocket::bind(address).await.unwrap();
 
@@ -625,7 +626,7 @@ impl PsqServer {
 
 
     /// Add new endpoint to the server with given path.
-    pub async fn add_endpoint(&mut self, path: &str, endpoint: IpEndpoint) {
+    pub async fn add_endpoint(&mut self, path: &str, endpoint: Box<dyn Endpoint>) {
         self.endpoints.lock().await.insert(path.to_string(), endpoint);
     }
 
@@ -720,7 +721,28 @@ impl PsqServer {
 
         Some(quiche::ConnectionId::from_ref(&token[addr.len()..]))
     }
+}
 
 
+#[async_trait]
+/// Base trait for different Endpoint types at the server.
+pub trait Endpoint: Send + Sync {
 
+    /// Process incoming HTTP/3 request. Generates a HTTP/3 response header and body,
+    /// and a new instance of a PsqStream - inherited object.
+    async fn process_request(
+        &self,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        stream_id: u64,
+    ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)>;
+}
+
+
+#[async_trait]
+/// Base trait for different tunnel/proxy stream types.
+pub trait PsqStream {
+
+    /// Process an incoming HTTP/3 datagram, content in `buf`.
+    async fn process_datagram(&mut self, buf: &[u8]);
 }

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use bytes::{BytesMut, BufMut};
 use futures::stream::{SplitSink, StreamExt};
 use futures::sink::SinkExt;
@@ -13,6 +14,8 @@ use tun::AsyncDevice;
 use crate::{
     connection::PsqConnection,
     PsqError,
+    server::{Endpoint, PsqStream},
+    VERSION_IDENTIFICATION,
     util::{hdrs_to_strings, send_quic_packets, MAX_DATAGRAM_SIZE},
 };
 
@@ -245,7 +248,7 @@ impl IpTunnel {
                 url.host_str().unwrap().as_bytes(),
             ),
             quiche::h3::Header::new(b":path", path.as_bytes()),
-            quiche::h3::Header::new(b"user-agent", b"pasque"),
+            quiche::h3::Header::new(b"user-agent", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
             quiche::h3::Header::new(b"capsule-protocol", b"?1"),
         ]
     }
@@ -289,6 +292,22 @@ impl IpTunnel {
     }
 }
 
+#[async_trait]
+impl PsqStream for IpTunnel {
+    async fn process_datagram(&mut self, buf: &[u8]) {
+        if self.tunwriter.is_some() {
+            debug!("Writing to TUN: {}", Self::packet_output(&buf, buf.len()));
+            let packet = BytesMut::from(&buf[..]);
+            if let Err(e) = self.tunwriter.as_mut().unwrap().send(packet).await {
+                error!("Send failed: {}", e);
+            }
+        }
+    }
+}
+
+unsafe impl Send for IpTunnel {}
+unsafe impl Sync for IpTunnel {}
+
 
 pub struct IpPacketCodec;
 
@@ -318,6 +337,7 @@ impl Encoder<BytesMut> for IpPacketCodec {
     }
 }
 
+
 /// Endpoint for IP tunnel over HTTP/3
 /// (see [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
 pub struct IpEndpoint {
@@ -326,24 +346,26 @@ pub struct IpEndpoint {
 }
 
 impl IpEndpoint {
-    pub fn new(local_addr: &str, remote_addr: &str) -> IpEndpoint {
-        IpEndpoint {
+    pub fn new(local_addr: &str, remote_addr: &str) -> Box<dyn Endpoint> {
+        Box::new(IpEndpoint {
             local_addr: local_addr.to_string(),
             remote_addr: remote_addr.to_string(),
-        }
+        })
     }
+}
 
-
-    pub (crate) async fn process_request(
+#[async_trait]
+impl Endpoint for IpEndpoint {
+    async fn process_request(
         &self,
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
-    ) -> Result<(IpTunnel, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
+    ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
 
         // TODO: Check that method is CONNECT, and other request headers
         debug!("Starting IP tunnel");
-        let mut iptunnel = IpTunnel::new(stream_id);
+        let mut iptunnel = Box::new(IpTunnel::new(stream_id));
         //let stream = self.streams.get_mut(&stream_id).unwrap();
         iptunnel.setup_tun_dev(
             stream_id,
@@ -359,7 +381,7 @@ impl IpEndpoint {
     
         let headers = vec![
             quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", b"quiche"),
+            quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
             quiche::h3::Header::new(b"capsule-protocol", b"?1"),
             quiche::h3::Header::new(
                 b"content-length",

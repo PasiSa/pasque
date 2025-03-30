@@ -10,11 +10,18 @@ const VERSION_IDENTIFICATION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Error, Debug)]
 pub enum PsqError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
 
     #[error("HTTP/3 capsule error: {0}")]
     H3Capsule(String),
+
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
+    #[error("HTTP response error: {0}")]
+    HttpResponse(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -71,6 +78,7 @@ fn make_qlog_writer(
 pub mod args;
 pub mod config;
 pub mod connection;
-pub mod server;
+pub mod filestream;
 pub mod iptunnel;
+pub mod server;
 pub mod util;

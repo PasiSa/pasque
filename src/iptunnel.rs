@@ -1,9 +1,13 @@
-use std::sync::Arc;
+use std::{
+    any::Any,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use bytes::{BytesMut, BufMut};
 use futures::stream::{SplitSink, StreamExt};
 use futures::sink::SinkExt;
+use quiche::h3::NameValue;
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -16,7 +20,12 @@ use crate::{
     PsqError,
     server::{Endpoint, PsqStream},
     VERSION_IDENTIFICATION,
-    util::{hdrs_to_strings, send_quic_packets, MAX_DATAGRAM_SIZE},
+    util::{
+        build_h3_headers,
+        hdrs_to_strings,
+        send_quic_packets, 
+        MAX_DATAGRAM_SIZE,
+    },
 };
 
 
@@ -56,90 +65,22 @@ impl IpTunnel {
                 .send_request(&mut *conn, &req, true)?;
         }  // release pconn lock
 
-        pconn.add_stream( stream_id, IpTunnel { stream_id, tunwriter: None } ).await
-    }
-
-
-    pub fn is_ready(&self) -> bool {
-        self.tunwriter.is_some()
+        // Blocks until request is replied and tunnel is set up
+        let ret = pconn.add_stream(
+            stream_id,
+            Box::new(IpTunnel { stream_id, tunwriter: None } )
+        ).await;
+        match ret {
+            Ok(stream) => {
+                Ok(IpTunnel::get_from_dyn(stream))
+            },
+            Err(e) => Err(e)
+        }
     }
 
 
     pub fn new(stream_id: u64) -> IpTunnel {
         IpTunnel { stream_id, tunwriter: None }
-    }
-
-
-    pub (crate) async fn process_h3_response(
-        &mut self,
-        h3_conn: &mut quiche::h3::Connection,
-        conn: &Arc<Mutex<quiche::Connection>>,
-        socket: &Arc<UdpSocket>,
-        config: &crate::config::Config,
-        event: quiche::h3::Event,
-        buf: &mut [u8],
-    ) -> Result<(), PsqError> {
-
-        match event {
-            quiche::h3::Event::Headers { list, .. } => {
-                info!(
-                    "got response headers {:?} on stream id {}",
-                    hdrs_to_strings(&list),
-                    self.stream_id
-                );
-                // TODO: check that response is 200 OK
-                // OK response to H3 connect request
-                // => bring up the TUN interface
-                let local_addr = config.tun_ip_local().to_string();
-                let remote_addr = config.tun_ip_remote().to_string();
-                self.setup_tun_dev(
-                    self.stream_id,
-                    &conn,
-                    &socket,
-                    &local_addr,
-                    &remote_addr,
-                ).await?;
-            },
-
-            quiche::h3::Event::Data => {
-                let c = &mut *conn.lock().await;
-                while let Ok(read) =
-                    h3_conn.recv_body(c, self.stream_id, buf)
-                {
-                    debug!(
-                        "got {} bytes of response data on stream {}",
-                        read, self.stream_id
-                    );
-
-                    debug!("{}", unsafe {
-                        std::str::from_utf8_unchecked(&buf[..read])
-                    });
-                }
-            },
-
-            quiche::h3::Event::Finished => {
-                info!(
-                    "response received in XX, closing..."
-                );
-            },
-
-            quiche::h3::Event::Reset(e) => {
-                error!(
-                    "request was reset by peer with {}, closing...",
-                    e
-                );
-
-                let c = &mut *conn.lock().await;
-                c.close(true, 0x100, b"kthxbye").unwrap();
-            },
-
-            quiche::h3::Event::PriorityUpdate => unreachable!(),
-
-            quiche::h3::Event::GoAway => {
-                info!("GOAWAY");
-            },
-        }
-        Ok(())
     }
 
 
@@ -183,17 +124,6 @@ impl IpTunnel {
     }
 
 
-    pub(crate) async fn process_datagram(&mut self, buf: &[u8]) {
-        if self.tunwriter.is_some() {
-            debug!("Writing to TUN: {}", Self::packet_output(&buf, buf.len()));
-            let packet = BytesMut::from(&buf[..]);
-            if let Err(e) = self.tunwriter.as_mut().unwrap().send(packet).await {
-                error!("Send failed: {}", e);
-            }
-        }
-    }
-
-
     /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
     /// Context ID and capsule length are ignored.
     pub(crate) fn process_h3_capsule(buf: &[u8]) -> Result<(u64, usize), PsqError>{
@@ -211,6 +141,11 @@ impl IpTunnel {
         let _context_id = octets.get_varint()?;  // not in use at the moment
 
         Ok((stream_id, octets.off()))
+    }
+
+
+    fn get_from_dyn(stream: &Box<dyn PsqStream>) -> &IpTunnel {
+        stream.as_any().downcast_ref::<IpTunnel>().unwrap()
     }
 
 
@@ -234,6 +169,7 @@ impl IpTunnel {
     fn prepare_request(url: &url::Url) -> Vec<quiche::h3::Header> {
         let mut path = String::from(url.path());
 
+        // TODO: move common parts to shared function
         if let Some(query) = url.query() {
             path.push('?');
             path.push_str(query);
@@ -294,7 +230,7 @@ impl IpTunnel {
 
 #[async_trait]
 impl PsqStream for IpTunnel {
-    async fn process_datagram(&mut self, buf: &[u8]) {
+    async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError> {
         if self.tunwriter.is_some() {
             debug!("Writing to TUN: {}", Self::packet_output(&buf, buf.len()));
             let packet = BytesMut::from(&buf[..]);
@@ -302,6 +238,89 @@ impl PsqStream for IpTunnel {
                 error!("Send failed: {}", e);
             }
         }
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+
+    fn is_ready(&self) -> bool {
+        self.tunwriter.is_some()
+    }
+
+
+    async fn process_h3_response(
+        &mut self,
+        h3_conn: &mut quiche::h3::Connection,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        config: &crate::config::Config,
+        event: quiche::h3::Event,
+        buf: &mut [u8],
+    ) -> Result<(), PsqError> {
+
+        match event {
+            quiche::h3::Event::Headers { list, .. } => {
+                info!(
+                    "got response headers {:?} on stream id {}",
+                    hdrs_to_strings(&list),
+                    self.stream_id
+                );
+                // TODO: check that response is 200 OK
+                // OK response to H3 connect request
+                // => bring up the TUN interface
+                let local_addr = config.tun_ip_local().to_string();
+                let remote_addr = config.tun_ip_remote().to_string();
+                self.setup_tun_dev(
+                    self.stream_id,
+                    &conn,
+                    &socket,
+                    &local_addr,
+                    &remote_addr,
+                ).await?;
+            },
+
+            quiche::h3::Event::Data => {
+                let c = &mut *conn.lock().await;
+                while let Ok(read) =
+                    h3_conn.recv_body(c, self.stream_id, buf)
+                {
+                    debug!(
+                        "got {} bytes of response data on stream {}",
+                        read, self.stream_id
+                    );
+
+                    debug!("{}", unsafe {
+                        std::str::from_utf8_unchecked(&buf[..read])
+                    });
+                }
+            },
+
+            quiche::h3::Event::Finished => {
+                info!(
+                    "IpTunnel stream finished!"
+                );
+            },
+
+            quiche::h3::Event::Reset(e) => {
+                error!(
+                    "request was reset by peer with {}, closing...",
+                    e
+                );
+
+                let c = &mut *conn.lock().await;
+                c.close(true, 0x100, b"kthxbye").unwrap();
+            },
+
+            quiche::h3::Event::PriorityUpdate => unreachable!(),
+
+            quiche::h3::Event::GoAway => {
+                info!("GOAWAY");
+            },
+        }
+        Ok(())
     }
 }
 
@@ -358,12 +377,26 @@ impl IpEndpoint {
 impl Endpoint for IpEndpoint {
     async fn process_request(
         &self,
+        request: &[quiche::h3::Header],
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
     ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
 
-        // TODO: Check that method is CONNECT, and other request headers
+        // TODO: Check that protocol and capsule protocol are correct
+        for hdr in request {
+            match hdr.name() {
+                b":method" => {
+                    if hdr.value() != b"CONNECT" {
+                        return Err(build_h3_headers(
+                            405, "Only CONNECT method suppored for this endpoint"
+                        ))
+                    }
+                },
+                _ => {},
+            }
+        }
+
         debug!("Starting IP tunnel");
         let mut iptunnel = Box::new(IpTunnel::new(stream_id));
         //let stream = self.streams.get_mut(&stream_id).unwrap();

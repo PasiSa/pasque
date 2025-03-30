@@ -13,8 +13,9 @@ use tokio::{
 
 use crate::{
     config::Config,
-    PsqError,
     iptunnel::IpTunnel,
+    PsqError,
+    server::PsqStream,
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -28,7 +29,7 @@ pub struct PsqConnection {
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
     url: url::Url,
-    streams: HashMap<u64, IpTunnel>,
+    streams: HashMap<u64, Box<dyn PsqStream>>,
     timeout_tx: watch::Sender<Option<Duration>>,
 }
 
@@ -178,11 +179,13 @@ impl PsqConnection {
                     },
                 };
 
-                let iptunnel = self.streams.get_mut(&stream_id);
-                if iptunnel.is_none() {
+                let stream = self.streams.get_mut(&stream_id);
+                if stream.is_none() {
                     warn!("Datagram received but no matching stream");
                 } else {
-                    iptunnel.unwrap().process_datagram(&buf[offset..n]).await;
+                    if let Err(e) = stream.unwrap().process_datagram(&buf[offset..n]).await {
+                        error!("Error processing HTTP datagram: {}", e);
+                    }
                 }
             },
             Err(e) => {
@@ -212,17 +215,16 @@ impl PsqConnection {
     }
 
 
-    /// Adds new stream to connection. Blocks until HTTP/3 CONNECT
-    /// negotiaton is complete.
+    /// Adds new stream to connection. Blocks until HTTP request is replied.
     pub (crate) async fn add_stream(
         &mut self,
         stream_id: u64,
-        stream: IpTunnel,
-    ) -> Result<&IpTunnel, PsqError> {
+        stream: Box<dyn PsqStream>,
+    ) -> Result<&Box<dyn PsqStream>, PsqError> {
 
         self.streams.insert(stream_id, stream);
 
-        // Ensure that the CONNECT request gets actually sent
+        // Ensure that the HTTP request gets actually sent
         send_quic_packets(&self.conn, &self.socket).await?;
         while !self.streams.get(&stream_id).unwrap().is_ready() {
             self.process().await?;
@@ -255,6 +257,7 @@ impl PsqConnection {
                 return Ok(());
             }
         }
+
         // Process HTTP/3 events.
         loop {
             match self.poll_helper().await {

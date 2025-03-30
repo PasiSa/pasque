@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
@@ -15,12 +16,14 @@ use tokio::{
 
 use crate::{
     iptunnel::IpTunnel,
-    VERSION_IDENTIFICATION,
+    PsqError,
     util::{
         build_h3_headers,
+        hdrs_to_strings,
         send_quic_packets,
         timeout_watcher,
     },
+    VERSION_IDENTIFICATION,
 };
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -35,6 +38,7 @@ struct PartialResponse {
 
 type Endpoints = HashMap<String, Box<dyn Endpoint>>;
 
+/// One client session to the server.
 struct Client {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
@@ -104,7 +108,9 @@ impl Client {
                 if stream.is_none() {
                     warn!("Datagram received but no matching stream ID: {}", stream_id);
                 } else {
-                    stream.unwrap().process_datagram(&buf[offset..n]).await;
+                    if let Err(e) = stream.unwrap().process_datagram(&buf[offset..n]).await {
+                        warn!("Error with received datagram: {}", e);
+                    }
                 }
             },
             Err(e) => {
@@ -126,7 +132,7 @@ impl Client {
                     stream_id,
                     quiche::h3::Event::Headers { list, .. },
                 )) => {
-                    self.handle_request(stream_id, &list, ".").await;
+                    self.handle_request(stream_id, &list).await;
                 },
 
                 Ok((stream_id, quiche::h3::Event::Data)) => {
@@ -169,12 +175,11 @@ impl Client {
     /// Handles incoming HTTP/3 requests.
     async fn handle_request(
         &mut self, stream_id: u64, headers: &[quiche::h3::Header],
-        root: &str,
     ) {
         info!(
             "{} got request {:?} on stream id {}",
             self.conn.lock().await.trace_id(),
-            Self::hdrs_to_strings(headers),
+            hdrs_to_strings(headers),
             stream_id
         );
 
@@ -184,7 +189,7 @@ impl Client {
         self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
             .unwrap();
 
-        let (headers, body) = self.build_response(stream_id, root, headers).await;
+        let (headers, body) = self.build_response(stream_id, headers).await;
 
         let conn = &mut self.conn.lock().await;
         let http3_conn = &mut self.http3_conn.as_mut().unwrap();
@@ -247,10 +252,7 @@ impl Client {
         let conn = &mut self.conn.lock().await;
 
         for stream_id in conn.writable() {
-
             let http3_conn = &mut self.http3_conn.as_mut().unwrap();
-
-            //debug!("{} stream {} is writable", conn.trace_id(), stream_id);
 
             if !self.partial_responses.contains_key(&stream_id) {
                 return;
@@ -299,29 +301,14 @@ impl Client {
     }
 
 
-    fn hdrs_to_strings(hdrs: &[quiche::h3::Header]) -> Vec<(String, String)> {
-        hdrs.iter()
-            .map(|h| {
-                let name = String::from_utf8_lossy(h.name()).to_string();
-                let value = String::from_utf8_lossy(h.value()).to_string();
-    
-                (name, value)
-            })
-        .collect()
-    }
-
-
     /// Builds an HTTP/3 response given a request.
     async fn build_response(
         &mut self,
         stream_id: u64,
-        root: &str,
         request: &[quiche::h3::Header],
     ) -> (Vec<quiche::h3::Header>, Vec<u8>) {
 
-        let mut _file_path = std::path::PathBuf::from(root);  // TODO: will be used later
         let mut path = std::path::Path::new("");
-        let mut _method = None;  // TODO: will be used later
 
         // Look for the request's path and method.
         for hdr in request {
@@ -333,9 +320,6 @@ impl Client {
                     }
                     path = std::path::Path::new(s.unwrap())
                 },
-
-                b":method" => _method = Some(hdr.value()),
-
                 _ => (),
             }
         }
@@ -347,7 +331,7 @@ impl Client {
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
         match self.endpoints.lock().await.get(&string) {
             Some(endpoint) => {
-               match endpoint.process_request(&self.conn, &self.socket, stream_id).await {
+               match endpoint.process_request(request, &self.conn, &self.socket, stream_id).await {
                     Ok((stream, header, body)) => {
                         self.streams.insert(stream_id, stream);
                         (header, body)
@@ -357,54 +341,14 @@ impl Client {
             }
             None => build_h3_headers(404, format!("Not Found: {}", string).as_str()),
         }
-
-        // TODO: the below is temorarily left in. Will be removed soon
-        /*let (status, body) = match method {
-            Some(b"GET") => {
-                for c in path.components() {
-                    if let std::path::Component::Normal(v) = c {
-                        file_path.push(v)
-                    }
-                }
-
-                match std::fs::read(file_path.as_path()) {
-                    Ok(data) => (200, data),
-
-                    Err(_) => (404, b"Not Found!".to_vec()),
-                }
-            },
-            Some(b"CONNECT") => {
-                self.streams.insert(stream_id, IpTunnel::new(stream_id));
-                let stream = self.streams.get_mut(&stream_id).unwrap();
-                stream.setup_tun_dev(
-                    stream_id,
-                    &self.conn,
-                    &self.socket,
-                    "10.76.0.2".to_string(),  // TODO: read address from config
-                    "10.76.0.1".to_string(),  // TODO: read address from config
-                ).await.unwrap();  // TODO: process error properly
-                return Ok(crate::process_connect(request))
-            },
-
-            _ => (405, Vec::new()),
-        };
-
-        let headers = vec![
-            quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", b"pasque"),
-            quiche::h3::Header::new(
-                b"content-length",
-                body.len().to_string().as_bytes(),
-            ),
-        ];
-
-        Ok((headers, body))*/
     }
 }
 
 
 type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
 
+
+/// The main server that listens to incoming connections.
 pub struct PsqServer {
     socket: Arc<UdpSocket>,
     qconfig: quiche::Config,
@@ -414,6 +358,8 @@ pub struct PsqServer {
 }
 
 impl PsqServer {
+
+    /// Configura and start the server at given address and port.
     pub async fn start(address: &str) -> PsqServer {
         info!("Pasque version {} starting", VERSION_IDENTIFICATION);
         let socket =
@@ -732,6 +678,7 @@ pub trait Endpoint: Send + Sync {
     /// and a new instance of a PsqStream - inherited object.
     async fn process_request(
         &self,
+        request: &[quiche::h3::Header],
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
@@ -741,8 +688,24 @@ pub trait Endpoint: Send + Sync {
 
 #[async_trait]
 /// Base trait for different tunnel/proxy stream types.
-pub trait PsqStream {
+pub trait PsqStream: Any + Send + Sync {
 
     /// Process an incoming HTTP/3 datagram, content in `buf`.
-    async fn process_datagram(&mut self, buf: &[u8]);
+    async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError>;
+
+    /// Returns true if the stream is ready to be used,
+    /// after HTTP request and response have been processed.
+    fn is_ready(&self) -> bool;
+
+    fn as_any(&self) -> &dyn Any;
+
+    async fn process_h3_response(
+        &mut self,
+        h3_conn: &mut quiche::h3::Connection,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        config: &crate::config::Config,
+        event: quiche::h3::Event,
+        buf: &mut [u8],
+    ) -> Result<(), PsqError>;
 }

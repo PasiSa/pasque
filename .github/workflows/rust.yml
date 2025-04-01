@@ -17,6 +17,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --no-run --features tuntest
+    - name: Run tests as sudo
+      run: |
+        testbin1=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'pasque-*' | head -n 1)
+        testbin2=$(find target/debug/deps -maxdepth 1 -type f -executable -name 'integration-*' | head -n 1)
+        echo "Running test binary: $testbin1 $testbin2"
+        sudo "$testbin1" --nocapture
+        sudo "$testbin2" --nocapture

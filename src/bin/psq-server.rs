@@ -19,7 +19,7 @@ async fn main() {
     }
 
     let mut psqserver = PsqServer::start("0.0.0.0:4433").await;
-    psqserver.add_endpoint("ip", IpEndpoint::new("10.76.0.1", "10.76.0.2")).await;
+    psqserver.add_endpoint("ip", IpEndpoint::new("10.75.0.1", "10.76.0.2")).await;
 
     loop {
         psqserver.process().await;

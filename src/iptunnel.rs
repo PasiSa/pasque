@@ -15,6 +15,9 @@ use tokio::{
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
 
+#[cfg(feature = "tuntest")]
+use tokio::io::AsyncWriteExt;
+
 use crate::{
     connection::PsqConnection,
     PsqError,
@@ -35,6 +38,9 @@ use crate::{
 pub struct IpTunnel {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
+
+    #[cfg(feature = "tuntest")]
+    teststream: Option<tokio::net::UnixStream>,
 }
 
 impl IpTunnel {
@@ -46,29 +52,22 @@ impl IpTunnel {
     /// 
     /// `urlstr` is URL path of the IP proxy endpoint at server. It is
     /// appended to the base URL used when establishing connection.
+    #[cfg(not(feature = "tuntest"))]
     pub async fn connect<'a>(
         pconn: &'a mut PsqConnection,
         urlstr: &str,
+
     ) -> Result<&'a IpTunnel, PsqError> {
 
-        let url = pconn.get_url().join(urlstr)?;
-        let req = Self::prepare_request(&url);
-        info!("sending HTTP request {:?}", req);
-
-        let stream_id: u64;
-        {
-            let a = pconn.connection();
-            let mut conn = a.lock().await;
-            let h3_conn = pconn.h3_connection().as_mut().unwrap();
-
-            stream_id = h3_conn
-                .send_request(&mut *conn, &req, true)?;
-        }  // release pconn lock
+        let stream_id = Self::start_connection(pconn, urlstr).await?;
 
         // Blocks until request is replied and tunnel is set up
         let ret = pconn.add_stream(
             stream_id,
-            Box::new(IpTunnel { stream_id, tunwriter: None } )
+            Box::new(IpTunnel {
+                stream_id,
+                tunwriter: None,
+             })
         ).await;
         match ret {
             Ok(stream) => {
@@ -78,9 +77,43 @@ impl IpTunnel {
         }
     }
 
+    #[cfg(feature = "tuntest")]
+    pub async fn connect<'a>(
+        pconn: &'a mut PsqConnection,
+        urlstr: &str,
+    ) -> Result<&'a IpTunnel, PsqError> {
+        Err(PsqError::Custom("Does not work".to_string()))
+    }
+
+
+    async fn start_connection<'a>(
+        pconn: &'a mut PsqConnection,
+        urlstr: &str,
+    ) -> Result<u64, PsqError> {
+
+        let url = pconn.get_url().join(urlstr)?;
+        let req = Self::prepare_request(&url);
+        info!("sending HTTP request {:?}", req);
+
+        let a = pconn.connection();
+        let mut conn = a.lock().await;
+        let h3_conn = pconn.h3_connection().as_mut().unwrap();
+
+        let stream_id = h3_conn
+            .send_request(&mut *conn, &req, true)?;
+
+        Ok(stream_id)
+    }
+
 
     pub fn new(stream_id: u64) -> IpTunnel {
-        IpTunnel { stream_id, tunwriter: None }
+        IpTunnel {
+            stream_id,
+            tunwriter: None,
+
+            #[cfg(feature = "tuntest")]
+            teststream: None,
+         }
     }
 
 
@@ -89,6 +122,7 @@ impl IpTunnel {
         stream_id: u64,
         origconn: &Arc<Mutex<quiche::Connection>>,
         origsocket: &Arc::<UdpSocket>,
+        ifname: &str,
         tun_ip_local: &String,
         tun_ip_remote: &String,
     ) -> Result<(), PsqError> {
@@ -97,7 +131,7 @@ impl IpTunnel {
 
         let mut config = tun::Configuration::default();
         config
-            .tun_name("tun0")   // Interface name
+            .tun_name(ifname)   // Interface name
             .address(tun_ip_local)  // Assign IP to the interface
             .destination(tun_ip_remote) // Peer address
             .netmask("255.255.255.0") // Subnet mask
@@ -238,6 +272,14 @@ impl PsqStream for IpTunnel {
                 error!("Send failed: {}", e);
             }
         }
+
+        #[cfg(feature = "tuntest")]
+        {
+            if self.teststream.is_some() {
+                self.teststream.as_mut().unwrap().write_all(&buf).await.unwrap();
+            }
+        }
+
         Ok(())
     }
 
@@ -277,6 +319,7 @@ impl PsqStream for IpTunnel {
                     self.stream_id,
                     &conn,
                     &socket,
+                    "tun0",
                     &local_addr,
                     &remote_addr,
                 ).await?;
@@ -404,6 +447,7 @@ impl Endpoint for IpEndpoint {
             stream_id,
             &conn,
             &socket,
+            "tun1",
             &self.local_addr,  // TODO: read address from config
             &self.remote_addr,  // TODO: read address from config
         ).await.unwrap();  // TODO: process error properly
@@ -422,5 +466,132 @@ impl Endpoint for IpEndpoint {
             ),
         ];
         Ok((iptunnel, headers, body))
+    }
+}
+
+
+#[cfg(all(test, feature = "tuntest"))]
+mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::UnixStream;
+    use tokio::time::{Duration, timeout};
+
+    use crate::config::Config;
+    use crate::server::PsqServer;
+
+    use super::*;
+
+    #[test]
+    fn test_ip_tunnel() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let addr = "127.0.0.1:8888";
+        rt.block_on(async {
+            let (tunnel, mut tester) = UnixStream::pair().unwrap();
+
+            let server = tokio::spawn(async move {
+                let mut psqserver = PsqServer::start(addr).await;
+                psqserver.add_endpoint(
+                    "ip",
+                    IpEndpoint::new("10.75.0.1", "10.76.0.2")
+                ).await;
+                loop {
+                    psqserver.process().await;
+                }
+    
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            // Run client
+            let config = match Config::read_from_file("config.json") {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("Applying default configuration: {}", e);
+                    Config::create_default()
+                }
+            };
+
+            let client = tokio::spawn(async move {
+
+                let mut psqconn = PsqConnection::connect(
+                    format!("https://{}/", addr).as_str(),
+                    config,
+                ).await.unwrap();
+                let mut _iptunnel = connect_test(
+                    &mut psqconn,
+                    "ip",
+                    tunnel,
+                ).await.unwrap();
+                loop {
+                    psqconn.process().await.unwrap();
+                }
+            });
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+
+            let result = timeout(Duration::from_millis(2000), async {
+                let socket = UdpSocket::bind("0.0.0.0:20000").await.unwrap();
+                socket.send_to(b"Hello", "10.76.0.1:20001").await.unwrap();
+
+                let mut buf = vec![0u8; 2000];
+                let mut count = 0;
+                while count < 2 {
+                    let n = tester.read(&mut buf).await.unwrap();
+                    println!("packet output: {}", IpTunnel::packet_output(
+                        &buf[..n],
+                        n,
+                    ));
+                    println!("count: {}", count);
+                    if count > 0 {
+                        assert!(n == 33, "Invalid IP packet length");
+                        assert!(buf[9] == 17, "Invalid protocol");
+                        assert!(
+                            u16::from_be_bytes([buf[22], buf[23]]) == 20001,
+                            "Invalid destination port"
+                        );
+                        assert!(
+                            buf[16] == 10 &&
+                            buf[17] == 76 &&
+                            buf[18] == 0 &&
+                            buf[19] == 1,
+                            "Invalid IP address",
+                        );
+                    }
+                    count += 1;
+                }
+            }).await;
+
+            assert!(result.is_ok(), "Test timed out");
+
+            client.abort();
+            server.abort();
+
+        });
+    }
+
+
+    async fn connect_test<'a>(
+        pconn: &'a mut PsqConnection,
+        urlstr: &str,
+        teststream: tokio::net::UnixStream,
+    ) -> Result<&'a IpTunnel, PsqError> {
+
+        let stream_id = IpTunnel::start_connection(pconn, urlstr).await?;
+
+        // Blocks until request is replied and tunnel is set up
+        let ret = pconn.add_stream(
+            stream_id,
+            Box::new(IpTunnel {
+                stream_id,
+                tunwriter: None,
+                teststream: Some(teststream),
+             })
+        ).await;
+        match ret {
+            Ok(stream) => {
+                Ok(IpTunnel::get_from_dyn(stream))
+            },
+            Err(e) => Err(e)
+        }
     }
 }

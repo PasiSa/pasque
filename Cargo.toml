@@ -3,6 +3,9 @@ name = "pasque"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+tuntest = []
+
 [dependencies]
 async-trait = "0.1"
 bytes = "1"

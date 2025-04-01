@@ -15,12 +15,12 @@ fn test_get_request() {
     let addr = "127.0.0.1:8888";
     rt.block_on(async {
         let server = tokio::spawn(async move {
-            let mut psqserver = PsqServer::start(addr).await;
+            let mut psqserver = PsqServer::start(addr).await.unwrap();
             psqserver.add_endpoint(
                 "files", 
                 Files::new(".")).await;
             loop {
-                psqserver.process().await;
+                psqserver.process().await.unwrap();
             }
 
         });

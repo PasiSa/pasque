@@ -489,13 +489,13 @@ mod tests {
             let (tunnel, mut tester) = UnixStream::pair().unwrap();
 
             let server = tokio::spawn(async move {
-                let mut psqserver = PsqServer::start(addr).await;
+                let mut psqserver = PsqServer::start(addr).await.unwrap();
                 psqserver.add_endpoint(
                     "ip",
                     IpEndpoint::new("10.75.0.1", "10.76.0.2")
                 ).await;
                 loop {
-                    psqserver.process().await;
+                    psqserver.process().await.unwrap();
                 }
     
             });

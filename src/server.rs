@@ -360,10 +360,10 @@ pub struct PsqServer {
 impl PsqServer {
 
     /// Configura and start the server at given address and port.
-    pub async fn start(address: &str) -> PsqServer {
+    pub async fn start(address: &str) -> Result<PsqServer, PsqError> {
         info!("Pasque version {} starting", VERSION_IDENTIFICATION);
         let socket =
-            tokio::net::UdpSocket::bind(address).await.unwrap();
+            tokio::net::UdpSocket::bind(address).await?;
 
         // Create the configuration for the QUIC connections.
         let mut qconfig = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
@@ -398,24 +398,26 @@ impl PsqServer {
         let conn_id_seed =
             ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
-        PsqServer {
+        Ok( PsqServer {
             socket: Arc::new(socket),
             qconfig,
             conn_id_seed,
             clients: ClientMap::new(),
             endpoints: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
 
-    pub async fn process(&mut self) {
+    pub async fn process(&mut self) -> Result<(), PsqError> {
         let mut buf = [0; 65535];
 
+        //let (len, from) = self.socket.recv_from(&mut buf).await?;
         let (len, from) = match self.socket.recv_from(&mut buf).await {
             Ok(v) => v,
 
             Err(e) => {
-                panic!("recv() failed: {:?}", e);
+                error!("recv() failed: {:?}", e);
+                return Err(PsqError::Io(e))
             },
         };
 
@@ -430,7 +432,7 @@ impl PsqServer {
 
             Err(e) => {
                 error!("Parsing packet header failed: {:?}", e);
-                return;
+                return Err(PsqError::Quiche(e))
             },
         };
 
@@ -449,7 +451,7 @@ impl PsqServer {
 
             if hdr.ty != quiche::Type::Initial {
                 error!("Packet is not Initial");
-                return;
+                return Err(PsqError::Custom("Packet not initial".to_string()))
             }
 
             if !quiche::version_is_supported(hdr.version) {
@@ -462,9 +464,10 @@ impl PsqServer {
                 let out = &out[..len];
 
                 if let Err(e) = self.socket.send_to(out, from).await {
-                    panic!("send() failed: {:?}", e);
+                    error!("send() failed: {:?}", e);
+                    return Err(PsqError::Io(e))
                 }
-                return;
+                return Ok(())
             }
 
             let mut scid = [0; quiche::MAX_CONN_ID_LEN];
@@ -494,10 +497,10 @@ impl PsqServer {
                 let out = &out[..len];
 
                 if let Err(e) = self.socket.send_to(out, from).await {
-                    panic!("send() failed: {:?}", e);
+                    error!("send() failed: {:?}", e);
+                    return Err(PsqError::Io(e))
                 }
-                return;
-                //continue 'read;
+                return Ok(())
             }
 
             let odcid = Self::validate_token(&from, token);
@@ -506,12 +509,12 @@ impl PsqServer {
             // drop the packet.
             if odcid.is_none() {
                 error!("Invalid address validation token");
-                return;
+                return Err(PsqError::Custom("Invalid address validation token".to_string()))
             }
 
             if scid.len() != hdr.dcid.len() {
                 error!("Invalid destination connection ID");
-                return;
+                return Err(PsqError::Custom("Invalid destination connection ID".to_string()))
             }
 
             // Reuse the source connection ID we sent in the Retry packet,
@@ -568,6 +571,7 @@ impl PsqServer {
         // Garbage collect closed connections.
         self.collect_garbage().await;
 
+        Ok(())
     }
 
 

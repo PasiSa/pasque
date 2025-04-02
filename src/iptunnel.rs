@@ -173,8 +173,9 @@ impl IpTunnel {
 
     fn packet_output(buf: &[u8], bytes_read: usize) -> String {
         let mut output = format!(
-            "Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
+            "bytes: {}; Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
             bytes_read,
+            u16::from_be_bytes([buf[2], buf[3]]),
             buf[16],buf[17],buf[18],buf[19],
             buf[9],
         );
@@ -261,8 +262,11 @@ impl PsqStream for IpTunnel {
             }
         }
 
-        if self.teststream.is_some() {
-            self.teststream.as_mut().unwrap().write_all(&buf).await.unwrap();
+        if self.teststream.is_some() && buf.len() >= 20 {
+            // This is just for testing so no smart checks here.
+            // We don't bother to write to teststream anything below
+            // 20 bytes, because obviously it is not an IP header.
+            self.teststream.as_mut().unwrap().write_all(&buf[..]).await.unwrap();
         }
 
         Ok(())
@@ -367,9 +371,12 @@ impl Decoder for IpPacketCodec {
             return Ok(None);
         }
 
-        // In practice you'd parse IP headers here to know packet length
-        // For now, just return the whole buffer
-        let len = src.len();
+        let mut len = src.len();
+        if src[0] == 0x45 && src.len() >= 20 {
+            // This is likely IPv4 packet, take length from IPv4 header field.
+            len = u16::from_be_bytes([src[2], src[3]]) as usize;
+        }
+
         let data = src.split_to(len);
         Ok(Some(data))
     }
@@ -512,11 +519,12 @@ mod tests {
                 }
             });
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
 
             let result = timeout(Duration::from_millis(2000), async {
                 let socket = UdpSocket::bind("0.0.0.0:20000").await.unwrap();
-                socket.send_to(b"Hello", "10.76.0.1:20001").await.unwrap();
+                socket.send_to(b"Hello", "10.76.0.100:20001").await.unwrap();
+                socket.send_to(b"Hello", "10.76.0.100:20001").await.unwrap();
 
                 let mut buf = vec![0u8; 2000];
                 let mut count = 0;
@@ -526,9 +534,11 @@ mod tests {
                         &buf[..n],
                         n,
                     ));
-                    println!("count: {}", count);
                     if count > 0 {
-                        assert!(n == 33, "Invalid IP packet length");
+                        assert!(
+                            u16::from_be_bytes([buf[2], buf[3]]) == 33,
+                            "Invalid IP packet length"
+                        );
                         assert!(buf[9] == 17, "Invalid protocol");
                         assert!(
                             u16::from_be_bytes([buf[22], buf[23]]) == 20001,
@@ -538,7 +548,7 @@ mod tests {
                             buf[16] == 10 &&
                             buf[17] == 76 &&
                             buf[18] == 0 &&
-                            buf[19] == 1,
+                            buf[19] == 100,
                             "Invalid IP address",
                         );
                     }

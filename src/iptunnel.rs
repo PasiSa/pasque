@@ -9,14 +9,12 @@ use futures::stream::{SplitSink, StreamExt};
 use futures::sink::SinkExt;
 use quiche::h3::NameValue;
 use tokio::{
+    io::AsyncWriteExt,
     net::UdpSocket,
     sync::Mutex,
 };
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
-
-#[cfg(feature = "tuntest")]
-use tokio::io::AsyncWriteExt;
 
 use crate::{
     connection::PsqConnection,
@@ -39,7 +37,7 @@ pub struct IpTunnel {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
 
-    #[cfg(feature = "tuntest")]
+    /// For testing support: tunneled packets are optionally written here
     teststream: Option<tokio::net::UnixStream>,
 }
 
@@ -52,7 +50,6 @@ impl IpTunnel {
     /// 
     /// `urlstr` is URL path of the IP proxy endpoint at server. It is
     /// appended to the base URL used when establishing connection.
-    #[cfg(not(feature = "tuntest"))]
     pub async fn connect<'a>(
         pconn: &'a mut PsqConnection,
         urlstr: &str,
@@ -67,6 +64,7 @@ impl IpTunnel {
             Box::new(IpTunnel {
                 stream_id,
                 tunwriter: None,
+                teststream: None,
              })
         ).await;
         match ret {
@@ -75,14 +73,6 @@ impl IpTunnel {
             },
             Err(e) => Err(e)
         }
-    }
-
-    #[cfg(feature = "tuntest")]
-    pub async fn connect<'a>(
-        pconn: &'a mut PsqConnection,
-        urlstr: &str,
-    ) -> Result<&'a IpTunnel, PsqError> {
-        Err(PsqError::Custom("Does not work".to_string()))
     }
 
 
@@ -110,8 +100,6 @@ impl IpTunnel {
         IpTunnel {
             stream_id,
             tunwriter: None,
-
-            #[cfg(feature = "tuntest")]
             teststream: None,
          }
     }
@@ -273,11 +261,8 @@ impl PsqStream for IpTunnel {
             }
         }
 
-        #[cfg(feature = "tuntest")]
-        {
-            if self.teststream.is_some() {
-                self.teststream.as_mut().unwrap().write_all(&buf).await.unwrap();
-            }
+        if self.teststream.is_some() {
+            self.teststream.as_mut().unwrap().write_all(&buf).await.unwrap();
         }
 
         Ok(())

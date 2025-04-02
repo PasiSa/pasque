@@ -1,15 +1,12 @@
 
 #[macro_use]
-#[cfg(not(feature = "tuntest"))]
 extern crate log;
 
-#[cfg(not(feature = "tuntest"))]
 use pasque::{
     args::Args, config::Config, connection::PsqConnection, iptunnel::IpTunnel,
 };
 
 #[tokio::main]
-#[cfg(not(feature = "tuntest"))]
 async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
 
@@ -32,8 +29,4 @@ async fn main() {
     while psqconn.process().await.is_ok() {
         // Just repeat until an error occurs
     }
-}
-
-#[cfg(feature = "tuntest")]
-fn main() {
 }

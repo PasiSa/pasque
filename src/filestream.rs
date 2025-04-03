@@ -212,7 +212,7 @@ impl Files {
 #[async_trait]
 impl Endpoint for Files {
     async fn process_request(
-        &self,
+        &mut self,
         request: &[quiche::h3::Header],
         _conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,

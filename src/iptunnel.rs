@@ -36,6 +36,7 @@ use crate::{
 pub struct IpTunnel {
     stream_id: u64,
     tunwriter: Option<SplitSink<Framed<AsyncDevice, IpPacketCodec>, BytesMut>>,
+    ifname: String,
 
     /// For testing support: tunneled packets are optionally written here
     teststream: Option<tokio::net::UnixStream>,
@@ -53,7 +54,7 @@ impl IpTunnel {
     pub async fn connect<'a>(
         pconn: &'a mut PsqConnection,
         urlstr: &str,
-
+        ifname: &str,
     ) -> Result<&'a IpTunnel, PsqError> {
 
         let stream_id = Self::start_connection(pconn, urlstr).await?;
@@ -64,6 +65,7 @@ impl IpTunnel {
             Box::new(IpTunnel {
                 stream_id,
                 tunwriter: None,
+                ifname: ifname.to_string(), 
                 teststream: None,
              })
         ).await;
@@ -96,16 +98,17 @@ impl IpTunnel {
     }
 
 
-    pub fn new(stream_id: u64) -> IpTunnel {
+    pub fn new(stream_id: u64, ifname: &str) -> IpTunnel {
         IpTunnel {
             stream_id,
             tunwriter: None,
+            ifname: ifname.to_string(),
             teststream: None,
          }
     }
 
 
-    pub(crate) async fn setup_tun_dev(
+    async fn setup_tun_dev(
         &mut self,
         stream_id: u64,
         origconn: &Arc<Mutex<quiche::Connection>>,
@@ -125,7 +128,7 @@ impl IpTunnel {
             .netmask("255.255.255.0") // Subnet mask
             .up(); // Bring interface up
     
-        let dev = tun::create_as_async(&config).expect("Failed to create TUN device");
+        let dev = tun::create_as_async(&config)?;
         let framed = Framed::new(dev, IpPacketCodec);
         let (writer, mut reader) = framed.split();
         self.tunwriter = Some(writer);
@@ -304,11 +307,12 @@ impl PsqStream for IpTunnel {
                 // => bring up the TUN interface
                 let local_addr = config.tun_ip_local().to_string();
                 let remote_addr = config.tun_ip_remote().to_string();
+                let ifname = self.ifname.clone();
                 self.setup_tun_dev(
                     self.stream_id,
                     &conn,
                     &socket,
-                    "tun0",
+                    &ifname,
                     &local_addr,
                     &remote_addr,
                 ).await?;
@@ -397,13 +401,17 @@ impl Encoder<BytesMut> for IpPacketCodec {
 pub struct IpEndpoint {
     local_addr: String,
     remote_addr: String,
+    ifprefix: String,
+    tuncount: u32,
 }
 
 impl IpEndpoint {
-    pub fn new(local_addr: &str, remote_addr: &str) -> Box<dyn Endpoint> {
+    pub fn new(local_addr: &str, remote_addr: &str, ifprexix: &str) -> Box<dyn Endpoint> {
         Box::new(IpEndpoint {
             local_addr: local_addr.to_string(),
             remote_addr: remote_addr.to_string(),
+            ifprefix: ifprexix.to_string(),
+            tuncount: 0,
         })
     }
 }
@@ -411,7 +419,7 @@ impl IpEndpoint {
 #[async_trait]
 impl Endpoint for IpEndpoint {
     async fn process_request(
-        &self,
+        &mut self,
         request: &[quiche::h3::Header],
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
@@ -433,21 +441,26 @@ impl Endpoint for IpEndpoint {
         }
 
         debug!("Starting IP tunnel");
-        let mut iptunnel = Box::new(IpTunnel::new(stream_id));
-        //let stream = self.streams.get_mut(&stream_id).unwrap();
-        iptunnel.setup_tun_dev(
+
+        // TODO: parse request
+        
+        let (mut status, mut body) = (200, Vec::<u8>::new());
+
+        let tunif = format!("{}-i{}", self.ifprefix, self.tuncount);
+        let mut iptunnel = Box::new(IpTunnel::new(stream_id, &tunif));
+        if let Err(e) = iptunnel.setup_tun_dev(
             stream_id,
             &conn,
             &socket,
-            "tun1",
-            &self.local_addr,  // TODO: read address from config
-            &self.remote_addr,  // TODO: read address from config
-        ).await.unwrap();  // TODO: process error properly
+            &tunif,
+            &self.local_addr,
+            &self.remote_addr,
+        ).await {
+            error!("Could not create TUN interface: {}", e);
+            (status, body) = (503, Vec::from(b"Count not create TUN interface"));
 
-        let (status, body) = (200, Vec::from("Moi".as_bytes()));
-    
-        // TODO: parse request
-    
+        }
+        
         let headers = vec![
             quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
             quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
@@ -457,7 +470,13 @@ impl Endpoint for IpEndpoint {
                 body.len().to_string().as_bytes(),
             ),
         ];
-        Ok((iptunnel, headers, body))
+
+        if status == 200 {
+            self.tuncount += 1;
+            Ok((iptunnel, headers, body))
+        } else {
+            Err((headers, body))
+        }
     }
 }
 
@@ -484,7 +503,7 @@ mod tests {
                 let mut psqserver = PsqServer::start(addr).await.unwrap();
                 psqserver.add_endpoint(
                     "ip",
-                    IpEndpoint::new("10.75.0.1", "10.76.0.2")
+                    IpEndpoint::new("10.75.0.1", "10.76.0.2", "tun-s")
                 ).await;
                 loop {
                     psqserver.process().await.unwrap();
@@ -579,6 +598,7 @@ mod tests {
             Box::new(IpTunnel {
                 stream_id,
                 tunwriter: None,
+                ifname: "tun-c".to_string(),
                 teststream: Some(teststream),
              })
         ).await;

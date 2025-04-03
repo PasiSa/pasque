@@ -24,7 +24,7 @@ async fn main() {
         config,
     ).await.unwrap();
 
-    let _iptunnel = IpTunnel::connect(&mut psqconn, "ip").await;
+    let _iptunnel = IpTunnel::connect(&mut psqconn, "ip", "tun-c").await;
 
     while psqconn.process().await.is_ok() {
         // Just repeat until an error occurs

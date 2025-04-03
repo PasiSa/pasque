@@ -35,6 +35,9 @@ pub enum PsqError {
     #[error("Octets buffer error: {0}")]
     Octets(#[from] octets::BufferTooShortError),
 
+    #[error("TUN interface error: {0}")]
+    Tun(#[from] tun::Error),
+
     #[error("UTF8 parsing error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 

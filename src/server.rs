@@ -329,14 +329,16 @@ impl Client {
             return build_h3_headers(404, "Not Found (empty path)")
         }
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
-        match self.endpoints.lock().await.get(&string) {
+        match self.endpoints.lock().await.get_mut(&string) {
             Some(endpoint) => {
                match endpoint.process_request(request, &self.conn, &self.socket, stream_id).await {
                     Ok((stream, header, body)) => {
                         self.streams.insert(stream_id, stream);
                         (header, body)
                     },
-                    Err(e) => e 
+                    Err((header, body)) => {
+                        (header, body)
+                    },
                 }
             }
             None => build_h3_headers(404, format!("Not Found: {}", string).as_str()),
@@ -681,7 +683,7 @@ pub trait Endpoint: Send + Sync {
     /// Process incoming HTTP/3 request. Generates a HTTP/3 response header and body,
     /// and a new instance of a PsqStream - inherited object.
     async fn process_request(
-        &self,
+        &mut self,
         request: &[quiche::h3::Header],
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,

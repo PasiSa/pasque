@@ -24,9 +24,7 @@ use crate::{
         prepare_h3_request,
         PsqStream,
     },
-    VERSION_IDENTIFICATION,
     util::{
-        build_h3_headers,
         hdrs_to_strings,
         send_quic_packets, 
         MAX_DATAGRAM_SIZE,
@@ -249,6 +247,7 @@ impl PsqStream for IpTunnel {
     }
 
 
+    /// Called at the client when response from HTTP/3 server arrives.
     async fn process_h3_response(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
@@ -388,28 +387,40 @@ impl Endpoint for IpEndpoint {
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
-    ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
+    ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
-        // TODO: Check that protocol and capsule protocol are correct
         for hdr in request {
             match hdr.name() {
                 b":method" => {
                     if hdr.value() != b"CONNECT" {
-                        return Err(build_h3_headers(
-                            405, "Only CONNECT method suppored for this endpoint"
+                        return Err(PsqError::HttpResponse(
+                            405,
+                            "Only CONNECT method suppored for this endpoint".to_string(),
                         ))
                     }
                 },
+                b":protocol" => {
+                    if hdr.value() != b"connect-ip" {
+                        return Err(PsqError::HttpResponse(
+                            406,  // what would be a proper status code?
+                            "Only 'connect-ip' protocol supported at this endpoint".to_string(),
+                        ))
+                    }
+                }
+                b"capsule-protocol" => {
+                    if hdr.value() != b"?1" {
+                        return Err(PsqError::HttpResponse(
+                            406,  // what would be a proper status code?
+                            "Unsupported capsule protocol".to_string(),
+                        ))
+                    }
+                }
                 _ => {},
             }
         }
 
         debug!("Starting IP tunnel");
-
-        // TODO: parse request
         
-        let (mut status, mut body) = (200, Vec::<u8>::new());
-
         let tunif = format!("{}-i{}", self.ifprefix, self.tuncount);
         let mut iptunnel = Box::new(IpTunnel::new(stream_id, &tunif));
         if let Err(e) = iptunnel.setup_tun_dev(
@@ -421,26 +432,14 @@ impl Endpoint for IpEndpoint {
             &self.remote_addr,
         ).await {
             error!("Could not create TUN interface: {}", e);
-            (status, body) = (503, Vec::from(b"Count not create TUN interface"));
-
+            return Err(PsqError::HttpResponse(
+                503,
+                "Count not create TUN interface".to_string(),
+            ))
         }
-        
-        let headers = vec![
-            quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
-            quiche::h3::Header::new(b"capsule-protocol", b"?1"),
-            quiche::h3::Header::new(
-                b"content-length",
-                body.len().to_string().as_bytes(),
-            ),
-        ];
 
-        if status == 200 {
-            self.tuncount += 1;
-            Ok((iptunnel, headers, body))
-        } else {
-            Err((headers, body))
-        }
+        self.tuncount += 1;
+        Ok((Some(iptunnel), Vec::<u8>::new()))
     }
 }
 
@@ -451,9 +450,12 @@ mod tests {
     use tokio::net::UnixStream;
     use tokio::time::{Duration, timeout};
 
-    use crate::config::Config;
-    use crate::server::PsqServer;
-    use crate::test_utils::init_logger;
+    use crate::{
+        config::Config,
+        server::PsqServer,
+        stream::filestream::FileStream,
+        test_utils::init_logger,
+    };
 
     use super::*;
 
@@ -494,11 +496,22 @@ mod tests {
                     format!("https://{}/", addr).as_str(),
                     config,
                 ).await.unwrap();
+
+                // Test first with GET which should not be supported on IP tunnel.
+                let ret = FileStream::get(
+                    &mut psqconn,
+                    "ip",
+                    "testout",
+                ).await;
+                assert!(matches!(ret, Err(PsqError::HttpResponse(405, _))));
+
+                // Start valid tunnel
                 let mut _iptunnel = connect_test(
                     &mut psqconn,
                     "ip",
                     tunnel,
                 ).await.unwrap();
+                
                 loop {
                     psqconn.process().await.unwrap();
                 }

@@ -18,7 +18,7 @@ pub enum PsqError {
     NotSupported(String),
 
     #[error("HTTP response error: {0}")]
-    HttpResponse(String),
+    HttpResponse(u16, String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

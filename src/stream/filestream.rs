@@ -17,17 +17,16 @@ use crate::{
         prepare_h3_request,
         PsqStream,
     },
-    util::{build_h3_headers, hdrs_to_strings},
-    VERSION_IDENTIFICATION,
+    util::hdrs_to_strings,
 };
 
 
 /// Stream to implement file transfer in response to GET request.
 pub struct FileStream {
     stream_id: u64,
-    status: String,
-    name: String,
-    written: usize,
+    status: u16,  // HTTP response status code
+    name: String,  // local file name
+    written: usize,  // bytes written to file
 }
 
 impl FileStream {
@@ -59,7 +58,7 @@ impl FileStream {
             stream_id,
             Box::new(FileStream {
                 stream_id,
-                status: String::new(),
+                status: 0,
                 name: filename.to_string(),
                 written: 0,
              } )
@@ -67,10 +66,10 @@ impl FileStream {
         match this {
             Ok(this) => {
                 let this = FileStream::get_from_dyn(this);
-                if this.status == "200" {
+                if this.status == 200 {
                     Ok(this.written)
                 } else {
-                    Err(PsqError::HttpResponse(format!("Error {}", this.status)))
+                    Err(PsqError::HttpResponse(this.status, String::from("Error")))
                 }
             },
             Err(e) => Err(e)
@@ -98,7 +97,7 @@ impl PsqStream for FileStream {
 
 
     fn is_ready(&self) -> bool {
-        self.status.len() > 0
+        self.status != 0
     }
 
 
@@ -124,7 +123,13 @@ impl PsqStream for FileStream {
                 for hdr in list {
                     match hdr.name() {
                         b":status" => {
-                            self.status = String::from_utf8_lossy(hdr.value()).to_string(); 
+                            let s = String::from_utf8_lossy(hdr.value());
+                            self.status = match s.parse::<u16>() {
+                                Ok(s) => s,
+                                Err(_) => {
+                                    return Err(PsqError::Custom("Invalid status code in Header!".to_string()))
+                                }
+                            }
                         },
                         _ => (),
                     }
@@ -147,9 +152,16 @@ impl PsqStream for FileStream {
 
                     // TODO: very simple implementation, should do proper error handling
                     // and prepare to receive big files.
-                    let mut file = std::fs::File::create(&self.name)?;
-                    file.write_all(&buf[..read])?;
-                    self.written = read;
+                    if self.status == 200 {
+                        let mut file = std::fs::File::create(&self.name)?;
+                        file.write_all(&buf[..read])?;
+                        self.written = read;
+                    } else {
+                        return Err(PsqError::HttpResponse(
+                            self.status,
+                            String::from_utf8_lossy(buf).to_string()),
+                        )
+                    }
                 }
             },
 
@@ -200,7 +212,7 @@ impl Endpoint for Files {
         _conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
         _stream_id: u64,
-    ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)> {
+    ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
         debug!("FileStream triggered");
         let mut file_path = std::path::PathBuf::from(&self.root);
@@ -210,8 +222,9 @@ impl Endpoint for Files {
             match hdr.name() {
                 b":method" => {
                     if hdr.value() != b"GET" {
-                        return Err(build_h3_headers(
-                            405, "Method not supported for this endpoint"
+                        return Err(PsqError::HttpResponse(
+                            405,
+                            "Method not supported for this endpoint".to_string(),
                         ))
                     }
                 },
@@ -235,24 +248,12 @@ impl Endpoint for Files {
             count += 1;
         }
 
-        let (status, body) = match std::fs::read(file_path.as_path()) {
-            Ok(data) => (200, data),
+        let body = match std::fs::read(file_path.as_path()) {
+            Ok(data) => data,
 
-            Err(_) => (404, b"Not Found!".to_vec()),
+            Err(_) => return Err(PsqError::HttpResponse(404, "Not Found!".to_string())),
         };
     
-        let headers = vec![
-            quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-            quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
-            quiche::h3::Header::new(b"capsule-protocol", b"?1"),
-            quiche::h3::Header::new(
-                b"content-length",
-                body.len().to_string().as_bytes(),
-            ),
-        ];
-
-        // Hacky approach to use Err for succesful response, but we do not
-        // need PsqStream object in this case. 
-        Err((headers, body))
+        Ok((None, body))
     }
 }

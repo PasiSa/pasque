@@ -21,6 +21,7 @@ use crate::{
     PsqError,
     util::{
         build_h3_headers,
+        build_h3_response,
         hdrs_to_strings,
         send_quic_packets,
         timeout_watcher,
@@ -318,7 +319,8 @@ impl Client {
                 b":path" => {
                     let s = std::str::from_utf8(hdr.value());
                     if s.is_err() {
-                        return build_h3_headers(400, "Invalid path!")
+                        warn!("Invalid path");
+                        return build_h3_response(400, "Invalid path!")
                     }
                     path = std::path::Path::new(s.unwrap())
                 },
@@ -328,22 +330,40 @@ impl Client {
 
         let ep = path.components().nth(1);
         if ep.is_none() {
-            return build_h3_headers(404, "Not Found (empty path)")
+            return build_h3_response(404, "Not Found (empty path)")
         }
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
         match self.endpoints.lock().await.get_mut(&string) {
             Some(endpoint) => {
-               match endpoint.process_request(request, &self.conn, &self.socket, stream_id).await {
-                    Ok((stream, header, body)) => {
-                        self.streams.insert(stream_id, stream);
-                        (header, body)
+                let (status, body) = match endpoint.process_request(
+                        request,
+                        &self.conn,
+                        &self.socket,
+                        stream_id
+                ).await {
+                    Ok((stream, body)) => {
+                        if stream.is_some() {
+                            // In some cases we do not create a new stream,
+                            // if the stream can be fully served right away.
+                            self.streams.insert(stream_id, stream.unwrap());
+                        }
+                        (200, body)
                     },
-                    Err((header, body)) => {
-                        (header, body)
+                    Err(PsqError::HttpResponse(status, body)) => {
+                        warn!("Http Response with error {}: {}", status, body);
+                        (status, body.as_bytes().to_vec())
                     },
-                }
+                    Err(e) => {
+                        error!("Error processing request: {}", e);
+                        (500, format!("Error processing request: {}", e).as_bytes().to_vec())
+                    },
+                };
+                (build_h3_headers(status, &body), body)
             }
-            None => build_h3_headers(404, format!("Not Found: {}", string).as_str()),
+            None => {
+                let body = format!("Not Found: {}", string).as_bytes().to_vec();
+                (build_h3_headers(404, &body), body)
+                }
         }
     }
 }
@@ -682,13 +702,19 @@ impl PsqServer {
 /// Base trait for different Endpoint types at the server.
 pub trait Endpoint: Send + Sync {
 
-    /// Process incoming HTTP/3 request. Generates a HTTP/3 response header and body,
-    /// and a new instance of a PsqStream - inherited object.
+    /// Process incoming HTTP/3 request.
+    /// If succesful, returns a [`PsqStream`]-derived object for handling
+    /// the follow-up processing of the stream (and related datagrams),
+    /// and body that can include, for example, capsules for additional
+    /// tunnel attributes.
+    /// Commonly, on unsuccesful cases it returns [`PsqError::HttpResponse`]
+    /// with status code and message, that will be propagated to client.
     async fn process_request(
         &mut self,
         request: &[quiche::h3::Header],
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
-    ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)>;
+    ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>),
+                PsqError>;
 }

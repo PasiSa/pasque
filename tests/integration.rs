@@ -1,16 +1,20 @@
 use std::time::Duration;
 
+use log::warn;
+
 use pasque::{
     config::Config,
     connection::PsqConnection,
     filestream::{FileStream, Files},
     server::PsqServer,
+    test_utils::init_logger,
 };
 use tokio::fs;
 
 
 #[test]
 fn test_get_request() {
+    init_logger();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let addr = "127.0.0.1:8888";
     rt.block_on(async {
@@ -31,7 +35,7 @@ fn test_get_request() {
         let config = match Config::read_from_file("config.json") {
             Ok(c) => c,
             Err(e) => {
-                println!("Applying default configuration: {}", e);
+                warn!("Applying default configuration: {}", e);
                 Config::create_default()
             }
         };

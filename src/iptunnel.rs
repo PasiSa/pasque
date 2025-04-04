@@ -489,11 +489,13 @@ mod tests {
 
     use crate::config::Config;
     use crate::server::PsqServer;
+    use crate::test_utils::init_logger;
 
     use super::*;
 
     #[test]
     fn test_ip_tunnel() {
+        init_logger();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let addr = "127.0.0.1:8888";
         rt.block_on(async {
@@ -517,7 +519,7 @@ mod tests {
             let config = match Config::read_from_file("config.json") {
                 Ok(c) => c,
                 Err(e) => {
-                    println!("Applying default configuration: {}", e);
+                    warn!("Applying default configuration: {}", e);
                     Config::create_default()
                 }
             };
@@ -549,7 +551,7 @@ mod tests {
                 let mut count = 0;
                 while count < 2 {
                     let n = tester.read(&mut buf).await.unwrap();
-                    println!("packet output: {}", IpTunnel::packet_output(
+                    debug!("packet output: {}", IpTunnel::packet_output(
                         &buf[..n],
                         n,
                     ));

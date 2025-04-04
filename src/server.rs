@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
@@ -15,7 +14,10 @@ use tokio::{
 };
 
 use crate::{
-    iptunnel::IpTunnel,
+    stream::{
+        process_h3_capsule,
+        PsqStream,
+    },
     PsqError,
     util::{
         build_h3_headers,
@@ -96,7 +98,7 @@ impl Client {
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match IpTunnel::process_h3_capsule(&buf) {
+                let (stream_id, offset) = match process_h3_capsule(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);
@@ -689,29 +691,4 @@ pub trait Endpoint: Send + Sync {
         socket: &Arc<UdpSocket>,
         stream_id: u64,
     ) -> Result<(Box<dyn PsqStream + Send + Sync + 'static>, Vec<quiche::h3::Header>, Vec<u8>), (Vec<quiche::h3::Header>, Vec<u8>)>;
-}
-
-
-#[async_trait]
-/// Base trait for different tunnel/proxy stream types.
-pub trait PsqStream: Any + Send + Sync {
-
-    /// Process an incoming HTTP/3 datagram, content in `buf`.
-    async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError>;
-
-    /// Returns true if the stream is ready to be used,
-    /// after HTTP request and response have been processed.
-    fn is_ready(&self) -> bool;
-
-    fn as_any(&self) -> &dyn Any;
-
-    async fn process_h3_response(
-        &mut self,
-        h3_conn: &mut quiche::h3::Connection,
-        conn: &Arc<Mutex<quiche::Connection>>,
-        socket: &Arc<UdpSocket>,
-        config: &crate::config::Config,
-        event: quiche::h3::Event,
-        buf: &mut [u8],
-    ) -> Result<(), PsqError>;
 }

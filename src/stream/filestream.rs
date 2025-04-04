@@ -12,7 +12,11 @@ use tokio::{
 use crate::{
     connection::PsqConnection,
     PsqError,
-    server::{Endpoint, PsqStream},
+    server::Endpoint,
+    stream::{
+        prepare_h3_request,
+        PsqStream,
+    },
     util::{build_h3_headers, hdrs_to_strings},
     VERSION_IDENTIFICATION,
 };
@@ -38,7 +42,7 @@ impl FileStream {
     ) -> Result<usize, PsqError>{
 
         let url = pconn.get_url().join(urlstr)?;
-        let req = Self::prepare_request(&url);
+        let req = prepare_h3_request("GET", "", &url);
         info!("sending HTTP request {:?}", req);
 
         let stream_id: u64;
@@ -77,29 +81,8 @@ impl FileStream {
     fn get_from_dyn(stream: &Box<dyn PsqStream>) -> &FileStream {
         stream.as_any().downcast_ref::<FileStream>().unwrap()
     }
-
-
-    fn prepare_request(url: &url::Url) -> Vec<quiche::h3::Header> {
-        let mut path = String::from(url.path());
-
-        // TODO: move common parts to shared function
-        if let Some(query) = url.query() {
-            path.push('?');
-            path.push_str(query);
-        }
-    
-        vec![
-            quiche::h3::Header::new(b":method", b"GET"),
-            quiche::h3::Header::new(b":scheme", url.scheme().as_bytes()),
-            quiche::h3::Header::new(
-                b":authority",
-                url.host_str().unwrap().as_bytes(),
-            ),
-            quiche::h3::Header::new(b":path", path.as_bytes()),
-            quiche::h3::Header::new(b"user-agent", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
-        ]
-    }
 }
+
 
 #[async_trait]
 impl PsqStream for FileStream {

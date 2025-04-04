@@ -5,7 +5,7 @@ use log::warn;
 use pasque::{
     config::Config,
     connection::PsqConnection,
-    filestream::{FileStream, Files},
+    stream::filestream::{FileStream, Files},
     server::PsqServer,
     test_utils::init_logger,
 };

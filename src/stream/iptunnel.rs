@@ -19,7 +19,11 @@ use tun::AsyncDevice;
 use crate::{
     connection::PsqConnection,
     PsqError,
-    server::{Endpoint, PsqStream},
+    server::Endpoint,
+    stream::{
+        prepare_h3_request,
+        PsqStream,
+    },
     VERSION_IDENTIFICATION,
     util::{
         build_h3_headers,
@@ -84,7 +88,11 @@ impl IpTunnel {
     ) -> Result<u64, PsqError> {
 
         let url = pconn.get_url().join(urlstr)?;
-        let req = Self::prepare_request(&url);
+        let req = prepare_h3_request(
+            "CONNECT",
+            "connect-ip",
+            &url,
+        );
         info!("sending HTTP request {:?}", req);
 
         let a = pconn.connection();
@@ -149,26 +157,6 @@ impl IpTunnel {
     }
 
 
-    /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
-    /// Context ID and capsule length are ignored.
-    pub(crate) fn process_h3_capsule(buf: &[u8]) -> Result<(u64, usize), PsqError>{
-        let mut octets = octets::Octets::with_slice(buf);
-
-        if octets.get_u8()? != 0x00 {  // TODO: use enums instead of numbers
-            // Not HTTP datagram
-            return Err(PsqError::H3Capsule("Not HTTP Datagram".to_string()))
-        }
-
-        let _length = octets.get_varint()?;  // not in use at the moment
-
-        let stream_id: u64 = octets.get_varint()? * 4;
-
-        let _context_id = octets.get_varint()?;  // not in use at the moment
-
-        Ok((stream_id, octets.off()))
-    }
-
-
     fn get_from_dyn(stream: &Box<dyn PsqStream>) -> &IpTunnel {
         stream.as_any().downcast_ref::<IpTunnel>().unwrap()
     }
@@ -189,30 +177,6 @@ impl IpTunnel {
             );
         }
         output
-    }
-
-
-    fn prepare_request(url: &url::Url) -> Vec<quiche::h3::Header> {
-        let mut path = String::from(url.path());
-
-        // TODO: move common parts to shared function
-        if let Some(query) = url.query() {
-            path.push('?');
-            path.push_str(query);
-        }
-    
-        vec![
-            quiche::h3::Header::new(b":method", b"CONNECT"),
-            quiche::h3::Header::new(b":protocol", b"connect-ip"),
-            quiche::h3::Header::new(b":scheme", url.scheme().as_bytes()),
-            quiche::h3::Header::new(
-                b":authority",
-                url.host_str().unwrap().as_bytes(),
-            ),
-            quiche::h3::Header::new(b":path", path.as_bytes()),
-            quiche::h3::Header::new(b"user-agent", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
-            quiche::h3::Header::new(b"capsule-protocol", b"?1"),
-        ]
     }
 
 

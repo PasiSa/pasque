@@ -3,7 +3,10 @@
 extern crate log;
 
 use pasque::{
-    args::Args, config::Config, connection::PsqConnection, iptunnel::IpTunnel,
+    args::Args,
+    config::Config,
+    connection::PsqConnection,
+    stream::iptunnel::IpTunnel,
 };
 
 #[tokio::main]

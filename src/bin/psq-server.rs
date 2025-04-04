@@ -1,7 +1,10 @@
 
 extern crate log;
 
-use pasque::{iptunnel::IpEndpoint, server::PsqServer};
+use pasque::{
+    server::PsqServer,
+    stream::iptunnel::IpEndpoint,
+};
 
 
 #[tokio::main]

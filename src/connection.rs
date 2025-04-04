@@ -13,9 +13,8 @@ use tokio::{
 
 use crate::{
     config::Config,
-    iptunnel::IpTunnel,
     PsqError,
-    server::PsqStream,
+    stream::{process_h3_capsule, PsqStream},
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -171,7 +170,7 @@ impl PsqConnection {
         match self.conn.lock().await.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match IpTunnel::process_h3_capsule(&buf) {
+                let (stream_id, offset) = match process_h3_capsule(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);

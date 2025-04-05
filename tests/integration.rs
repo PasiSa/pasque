@@ -1,9 +1,7 @@
 use std::time::Duration;
 
-use log::warn;
 
 use pasque::{
-    config::Config,
     connection::PsqConnection,
     stream::filestream::{FileStream, Files},
     server::PsqServer,
@@ -32,17 +30,8 @@ fn test_get_request() {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Run client
-        let config = match Config::read_from_file("config.json") {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Applying default configuration: {}", e);
-                Config::create_default()
-            }
-        };
-    
         let mut psqconn = PsqConnection::connect(
             format!("https://{}/", addr).as_str(),
-            config,
         ).await.unwrap();
         let ret = FileStream::get(
             &mut psqconn,

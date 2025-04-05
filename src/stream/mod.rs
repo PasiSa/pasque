@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use quiche::h3::NameValue;
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -14,6 +15,11 @@ use crate::{
     VERSION_IDENTIFICATION,
 };
 
+
+pub (crate) enum Capsule {
+    Datagram = 0x00,
+    AddressAssign = 0x01,
+}
 
 #[async_trait]
 /// Base trait for different tunnel/proxy stream types.
@@ -33,7 +39,6 @@ pub trait PsqStream: Any + Send + Sync {
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
-        config: &crate::config::Config,
         event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError>;
@@ -77,10 +82,10 @@ pub (crate) fn prepare_h3_request(
 
 /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
 /// Context ID and capsule length are ignored.
-pub(crate) fn process_h3_capsule(buf: &[u8]) -> Result<(u64, usize), PsqError>{
+pub(crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
     let mut octets = octets::Octets::with_slice(buf);
 
-    if octets.get_u8()? != 0x00 {  // TODO: use enums instead of numbers
+    if octets.get_u8()? != Capsule::Datagram as u8 {
         // Not HTTP datagram
         return Err(PsqError::H3Capsule("Not HTTP Datagram".to_string()))
     }
@@ -94,6 +99,63 @@ pub(crate) fn process_h3_capsule(buf: &[u8]) -> Result<(u64, usize), PsqError>{
     Ok((stream_id, octets.off()))
 }
 
+
+/// Validate request headers assuming a CONNECT request, and check that
+/// `protocol` matches the header.
+pub (crate) fn check_request_headers(
+    request: &[quiche::h3::Header],
+    protocol: &str,
+) -> Result<(), PsqError> {
+
+    for hdr in request {
+        match hdr.name() {
+            b":method" => {
+                if hdr.value() != b"CONNECT" {
+                    return Err(PsqError::HttpResponse(
+                        405,
+                        "Only CONNECT method suppored for this endpoint".to_string(),
+                    ))
+                }
+            },
+            b":protocol" => {
+                if hdr.value() != protocol.as_bytes() {
+                    return Err(PsqError::HttpResponse(
+                        406,  // what would be a proper status code?
+                        format!("Only protocol '{}' supported at this endpoint", protocol),
+                    ))
+                }
+            }
+            b"capsule-protocol" => {
+                if hdr.value() != b"?1" {
+                    return Err(PsqError::HttpResponse(
+                        406,  // what would be a proper status code?
+                        "Unsupported capsule protocol".to_string(),
+                    ))
+                }
+            }
+            _ => {},
+        }
+    }
+
+    Ok(())
+}
+
+
+/// Extracts the HTTP/3 status code from the headers.
+/// Returns the status code as u8 if found and valid, otherwise returns PsqError.
+fn get_h3_status(headers: &[quiche::h3::Header]) -> Result<u16, PsqError> {
+    for hdr in headers {
+        if hdr.name() == b":status" {
+            let status_str = String::from_utf8_lossy(hdr.value());
+            return match status_str.parse::<u16>() {
+                Ok(status) if status <= u16::MAX as u16 => Ok(status as u16),
+                Ok(_) => Err(PsqError::HttpResponse(500, "Status code out of range".to_string())),
+                Err(_) => Err(PsqError::HttpResponse(500, "Invalid :status header".to_string())),
+            };
+        }
+    }
+    Err(PsqError::HttpResponse(500, "Missing :status header".to_string()))
+}
 
 pub mod iptunnel;
 pub mod filestream;

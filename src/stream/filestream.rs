@@ -106,12 +106,10 @@ impl PsqStream for FileStream {
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
-        _config: &crate::config::Config,
         event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
 
-        //let mut status: String;
         match event {
             quiche::h3::Event::Headers { list, .. } => {
                 info!(

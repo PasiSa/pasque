@@ -12,9 +12,8 @@ use tokio::{
 };
 
 use crate::{
-    config::Config,
     PsqError,
-    stream::{process_h3_capsule, PsqStream},
+    stream::{process_h3_datagram, PsqStream},
     util::{send_quic_packets, timeout_watcher},
 };
 
@@ -23,7 +22,6 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 /// HTTP/3 & QUIC connection that is used to set up streams for different
 /// proxy / tunnel sessions.
 pub struct PsqConnection {
-    config: Config,
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
@@ -35,7 +33,6 @@ pub struct PsqConnection {
 impl PsqConnection {
     pub async fn connect(
         urlstr: &str,
-        config: Config,
     ) -> Result<PsqConnection, PsqError> {
 
         let url = url::Url::parse(&urlstr).unwrap();
@@ -54,7 +51,7 @@ impl PsqConnection {
         let socket =
             tokio::net::UdpSocket::bind(bind_addr).await.unwrap();
 
-            // Create the configuration for the QUIC connection.
+        // Create the configuration for the QUIC connection.
         let mut qconfig = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
         // *CAUTION*: this should not be set to `false` in production!!!
@@ -106,7 +103,6 @@ impl PsqConnection {
         }
         let (tx, rx) = watch::channel(conn.timeout());
         let mut this = PsqConnection {
-            config,
             socket: Arc::new(socket),
             conn: Arc::new(Mutex::new(conn)),
             h3_conn: None,
@@ -170,7 +166,7 @@ impl PsqConnection {
         match self.conn.lock().await.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match process_h3_capsule(&buf) {
+                let (stream_id, offset) = match process_h3_datagram(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);
@@ -267,7 +263,6 @@ impl PsqConnection {
                             &mut self.h3_conn.as_mut().unwrap(),
                             &self.conn,
                             &self.socket,
-                            &self.config,
                             event,
                             buf
                         ).await?;

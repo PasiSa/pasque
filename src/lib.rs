@@ -26,6 +26,9 @@ pub enum PsqError {
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
 
+    #[error("IP Address parse error: {0}")]
+    AddressParse(#[from] ipnetwork::IpNetworkError),
+
     #[error("QUIC error: {0}")]
     Quiche(#[from] quiche::Error),
 

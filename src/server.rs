@@ -15,7 +15,7 @@ use tokio::{
 
 use crate::{
     stream::{
-        process_h3_capsule,
+        process_h3_datagram,
         PsqStream,
     },
     PsqError,
@@ -99,7 +99,7 @@ impl Client {
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 debug!("Datagram received, {} bytes", n);
-                let (stream_id, offset) = match process_h3_capsule(&buf) {
+                let (stream_id, offset) = match process_h3_datagram(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);

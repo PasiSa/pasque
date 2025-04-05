@@ -149,6 +149,7 @@ impl IpTunnel {
         let mut config = tun::Configuration::default();
         config
             .tun_name(ifname)   // Interface name
+            .mtu(1300)
             .address(&self.local_addr.unwrap().ip())  // Assign IP to the interface
             .destination(&self.remote_addr.unwrap().ip()) // Peer address
             .netmask("255.255.255.255") // Subnet mask
@@ -221,6 +222,9 @@ impl IpTunnel {
 
 
     fn packet_output(buf: &[u8], bytes_read: usize) -> String {
+        if buf.len() < 32 {
+            return format!("Not an IP packet")
+        }
         let mut output = format!(
             "bytes: {}; Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
             bytes_read,
@@ -500,14 +504,7 @@ impl Decoder for IpPacketCodec {
         if src.is_empty() {
             return Ok(None);
         }
-
-        let mut len = src.len();
-        if src[0] == 0x45 && src.len() >= 20 {
-            // This is likely IPv4 packet, take length from IPv4 header field.
-            len = u16::from_be_bytes([src[2], src[3]]) as usize;
-        }
-
-        let data = src.split_to(len);
+        let data = src.split_to(src.len());
         Ok(Some(data))
     }
 }

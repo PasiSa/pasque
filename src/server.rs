@@ -643,6 +643,8 @@ impl PsqServer {
     }
 
 
+    /// This is taken from Quiche examples, and should be replaced, as said below
+    /// 
     /// Generate a stateless retry token.
     ///
     /// The token includes the static string `"quiche"` followed by the IP address
@@ -668,6 +670,8 @@ impl PsqServer {
     }
 
 
+    /// This is taken from Quiche examples, and should be replaced, as said below
+    /// 
     /// Validates a stateless retry token.
     ///
     /// This checks that the ticket includes the `"quiche"` static string, and that

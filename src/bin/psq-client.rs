@@ -14,10 +14,14 @@ async fn main() {
 
     let args = Args::new();
 
+    // Create QUIC and HTTP/3 connection to URL given on
+    // command line `-d` or `--dest` argument.
     let mut psqconn = PsqConnection::connect(
         args.dest(),
     ).await.unwrap();
 
+    // Triggers a CONNECT request to "ip" endpoint at the server.
+    // The call blocks until server has replied and tunnel is established.
     match IpTunnel::connect(&mut psqconn, "ip", "tun-c").await {
         Ok(iptunnel) => {
             info!("IpTunnel set up with local address {}", iptunnel.local_addr().unwrap());
@@ -28,6 +32,8 @@ async fn main() {
         }
     }
 
+    // Loop forever processing tunnel traffic between QUIC connection
+    // and the TUN interface.
     while psqconn.process().await.is_ok() {
         // Just repeat until an error occurs
     }

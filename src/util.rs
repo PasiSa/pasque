@@ -40,33 +40,36 @@ pub (crate) async fn send_quic_packets(
             error!("UDP send() failed: {:?}", e);
             return Err(PsqError::Io(e))
         }
-
-        //debug!("{} written {} bytes", conn.trace_id(), write);
     }
     Ok(())
 }
 
 
-pub (crate) fn timeout_watcher(conn: Arc<Mutex<quiche::Connection>>, mut rx: watch::Receiver<Option<Duration>>) {
+pub (crate) fn timeout_watcher(
+    conn: Arc<Mutex<quiche::Connection>>,
+    socket: Arc<UdpSocket>,
+    mut rx: watch::Receiver<Option<Duration>>) {
+
     tokio::spawn(async move {
         loop {
-            let duration = *rx.borrow_and_update();
-            // if we do not have timeout to set, sleep for 100 years.
-            // Maybe someday we have proper implementation.
+            let conn_guard = conn.lock().await;
+            let duration = conn_guard.timeout();
+            drop(conn_guard);
+
             let sleep_future = sleep(duration.unwrap_or(Duration::from_secs(100 * 365 * 24 * 60 * 60)));
             tokio::pin!(sleep_future);
 
             tokio::select! {
                 _ = &mut sleep_future => {
                     debug!("timeout occurred");
-                    let mut locked = conn.lock().await;
-                    locked.on_timeout();
-                    // TODO: Should be prepared to send packets triggered by timeout
-                    break;
+                    conn.lock().await.on_timeout();
+                    if let Err(e) = send_quic_packets(&conn, &socket).await {
+                        error!("Timeout occurred, but sending QUIC packets failed: {}", e);
+                    }
+                    continue;
                 }
                 changed = rx.changed() => {
                     if changed.is_ok() {
-                        // New duration was received, loop will recreate sleep
                         debug!("[Watcher] Timeout changed to {:?}", *rx.borrow());
                         continue;
                     } else {

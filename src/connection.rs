@@ -110,7 +110,11 @@ impl PsqConnection {
             streams: HashMap::new(),
             timeout_tx: tx,
         };
-        timeout_watcher(Arc::clone(&this.conn), rx);
+        timeout_watcher(
+            Arc::clone(&this.conn),
+            Arc::clone(&this.socket),
+            rx,
+        );
         this.finish_connect().await?;   // complete when HTTP/3 connection is set up
 
         Ok(this)

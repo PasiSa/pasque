@@ -567,7 +567,11 @@ impl PsqServer {
                 streams: HashMap::new(),
                 endpoints: Arc::clone(&self.endpoints),
             };
-            timeout_watcher(Arc::clone(&client.conn), rx);
+            timeout_watcher(
+                Arc::clone(&client.conn),
+                Arc::clone(&self.socket),
+                rx,
+            );
 
             self.clients.insert(scid.clone(), client);
             self.clients.get_mut(&scid).unwrap()

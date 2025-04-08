@@ -21,7 +21,7 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 
 /// HTTP/3 & QUIC connection that is used to set up streams for different
 /// proxy / tunnel sessions.
-pub struct PsqConnection {
+pub struct PsqClient {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
     h3_conn: Option<quiche::h3::Connection>,
@@ -30,10 +30,10 @@ pub struct PsqConnection {
     timeout_tx: watch::Sender<Option<Duration>>,
 }
 
-impl PsqConnection {
+impl PsqClient {
     pub async fn connect(
         urlstr: &str,
-    ) -> Result<PsqConnection, PsqError> {
+    ) -> Result<PsqClient, PsqError> {
 
         let url = url::Url::parse(&urlstr).unwrap();
 
@@ -102,7 +102,7 @@ impl PsqConnection {
             panic!("send() failed: {:?}", e);
         }
         let (tx, rx) = watch::channel(conn.timeout());
-        let mut this = PsqConnection {
+        let mut this = PsqClient {
             socket: Arc::new(socket),
             conn: Arc::new(Mutex::new(conn)),
             h3_conn: None,
@@ -302,3 +302,5 @@ fn hex_dump(buf: &[u8]) -> String {
 
     vec.join("")
 }
+
+pub mod args;

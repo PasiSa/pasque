@@ -81,11 +81,11 @@ fn make_qlog_writer(
 }
 
 
-pub mod args;
 pub mod config;
-pub mod connection;
+pub mod client;
 pub mod server;
 pub mod stream;
-pub mod util;
+
+mod util;
 
 pub mod test_utils;

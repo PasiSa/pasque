@@ -10,7 +10,7 @@ use tokio::{
 };
 
 use crate::{
-    connection::PsqConnection,
+    client::PsqClient,
     PsqError,
     server::Endpoint,
     stream::{
@@ -35,7 +35,7 @@ impl FileStream {
     /// `urlstr` is the URL at the server. `filename` is the file created at the
     /// local file system. Returns number of bytes received or error.
     pub async fn get<'a>(
-        pconn: &'a mut PsqConnection,
+        pconn: &'a mut PsqClient,
         urlstr: &str,
         filename: &str,
     ) -> Result<usize, PsqError>{

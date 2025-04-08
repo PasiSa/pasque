@@ -21,7 +21,7 @@ use tun::AsyncDevice;
 
 use super::*;
 use crate::{
-    connection::PsqConnection,
+    client::PsqClient,
     PsqError,
     server::Endpoint,
     util::{
@@ -56,7 +56,7 @@ impl IpTunnel {
     /// `urlstr` is URL path of the IP proxy endpoint at server. It is
     /// appended to the base URL used when establishing connection.
     pub async fn connect<'a>(
-        pconn: &'a mut PsqConnection,
+        pconn: &'a mut PsqClient,
         urlstr: &str,
         ifname: &str,
     ) -> Result<&'a IpTunnel, PsqError> {
@@ -85,7 +85,7 @@ impl IpTunnel {
 
 
     async fn start_connection<'a>(
-        pconn: &'a mut PsqConnection,
+        pconn: &'a mut PsqClient,
         urlstr: &str,
     ) -> Result<u64, PsqError> {
 
@@ -689,7 +689,7 @@ mod tests {
             // Run client
             let client1 = tokio::spawn(async move {
 
-                let mut psqconn = PsqConnection::connect(
+                let mut psqconn = PsqClient::connect(
                     format!("https://{}/", addr).as_str(),
                 ).await.unwrap();
 
@@ -712,7 +712,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
 
             let client2 = tokio::spawn(async move {
-                let mut psqconn = PsqConnection::connect(
+                let mut psqconn = PsqClient::connect(
                     format!("https://{}/", addr).as_str(),
                 ).await.unwrap();
                 add_client(&mut psqconn, "10.76.0.3", None).await;
@@ -764,7 +764,7 @@ mod tests {
         });
     }
 
-    async fn add_client(pconn: &mut PsqConnection, addr: &str, tunnel: Option<UnixStream>) {
+    async fn add_client(pconn: &mut PsqClient, addr: &str, tunnel: Option<UnixStream>) {
         let iptunnel = connect_test(
             pconn,
             "ip",
@@ -778,7 +778,7 @@ mod tests {
     }
 
     async fn connect_test<'a>(
-        pconn: &'a mut PsqConnection,
+        pconn: &'a mut PsqClient,
         urlstr: &str,
         teststream: Option<tokio::net::UnixStream>,
     ) -> Result<&'a IpTunnel, PsqError> {

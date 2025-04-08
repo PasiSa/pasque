@@ -2,7 +2,7 @@ use std::time::Duration;
 
 
 use pasque::{
-    connection::PsqConnection,
+    client::PsqClient,
     stream::filestream::{FileStream, Files},
     server::PsqServer,
     test_utils::init_logger,
@@ -30,7 +30,7 @@ fn test_get_request() {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Run client
-        let mut psqconn = PsqConnection::connect(
+        let mut psqconn = PsqClient::connect(
             format!("https://{}/", addr).as_str(),
         ).await.unwrap();
         let ret = FileStream::get(

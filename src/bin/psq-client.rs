@@ -3,8 +3,7 @@
 extern crate log;
 
 use pasque::{
-    args::Args,
-    connection::PsqConnection,
+    client::{PsqClient, args::Args},
     stream::iptunnel::IpTunnel,
 };
 
@@ -14,9 +13,9 @@ async fn main() {
 
     let args = Args::new();
 
-    // Create QUIC and HTTP/3 connection to URL given on
+    // Create an HTTP/3 connection to URL given on
     // command line `-d` or `--dest` argument.
-    let mut psqconn = PsqConnection::connect(
+    let mut psqconn = PsqClient::connect(
         args.dest(),
     ).await.unwrap();
 

@@ -17,6 +17,7 @@ async fn main() {
     // command line `-d` or `--dest` argument.
     let mut psqconn = PsqClient::connect(
         args.dest(),
+        args.ignore_cert(),
     ).await.unwrap();
 
     // Triggers a CONNECT request to "ip" endpoint at the server.

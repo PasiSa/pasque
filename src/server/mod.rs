@@ -14,11 +14,12 @@ use tokio::{
 };
 
 use crate::{
+    PsqError,
+    server::config::Config,
     stream::{
         process_h3_datagram,
         PsqStream,
     },
-    PsqError,
     util::{
         MAX_DATAGRAM_SIZE,
         build_h3_headers,
@@ -34,24 +35,23 @@ use crate::{
 impl PsqServer {
 
     /// Configure and start the server at given address and port.
-    pub async fn start(address: &str) -> Result<PsqServer, PsqError> {
-        info!("Pasque version {} starting", VERSION_IDENTIFICATION);
+    pub async fn start(address: &str, config: &Config) -> Result<PsqServer, PsqError> {
+        info!("Pasque server version {} starting", VERSION_IDENTIFICATION);
         let socket =
             tokio::net::UdpSocket::bind(address).await?;
 
         // Create the configuration for the QUIC connections.
         let mut qconfig = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
+        debug!("Loading cert from: {}", config.cert_file());
         qconfig
-            .load_cert_chain_from_pem_file("src/bin/cert.crt")
-            .unwrap();
+            .load_cert_chain_from_pem_file(&config.cert_file())?;
+        debug!("Loading key from: {}", config.key_file());
         qconfig
-            .load_priv_key_from_pem_file("src/bin/cert.key")
-            .unwrap();
+            .load_priv_key_from_pem_file(&config.key_file())?;
 
         qconfig
-            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
-            .unwrap();
+            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
 
         // TODO: need idle timeout and have some keep-alive to clean up disappeared clients
         //config.set_max_idle_timeout(5000);
@@ -726,3 +726,6 @@ pub trait Endpoint: Send + Sync {
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>),
                 PsqError>;
 }
+
+pub mod args;
+pub mod config;

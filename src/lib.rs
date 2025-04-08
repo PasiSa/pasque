@@ -81,7 +81,6 @@ fn make_qlog_writer(
 }
 
 
-pub mod config;
 pub mod client;
 pub mod server;
 pub mod stream;

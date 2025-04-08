@@ -10,6 +10,9 @@ pub struct Args {
     /// URL to connect.
     #[arg(short, long)]
     dest: String,
+
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    ignore_cert: bool,
 }
 
 
@@ -26,5 +29,9 @@ impl Args {
 
     pub fn dest(&self) -> &String {
        &self.dest
+    }
+
+    pub fn ignore_cert(&self) -> bool {
+        self.ignore_cert
     }
 }

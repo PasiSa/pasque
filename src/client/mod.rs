@@ -33,6 +33,7 @@ pub struct PsqClient {
 impl PsqClient {
     pub async fn connect(
         urlstr: &str,
+        ignore_cert: bool,
     ) -> Result<PsqClient, PsqError> {
 
         let url = url::Url::parse(&urlstr).unwrap();
@@ -54,8 +55,7 @@ impl PsqClient {
         // Create the configuration for the QUIC connection.
         let mut qconfig = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
 
-        // *CAUTION*: this should not be set to `false` in production!!!
-        qconfig.verify_peer(false);
+        qconfig.verify_peer(!ignore_cert);
 
         qconfig
             .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)

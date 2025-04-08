@@ -654,7 +654,7 @@ mod tests {
     use tokio::time::Duration;
 
     use crate::{
-        server::PsqServer,
+        server::{PsqServer, config::Config},
         stream::filestream::FileStream,
         test_utils::init_logger,
     };
@@ -670,7 +670,8 @@ mod tests {
             let (tunnel, mut _tester) = UnixStream::pair().unwrap();
 
             let server = tokio::spawn(async move {
-                let mut psqserver = PsqServer::start(addr).await.unwrap();
+                let config = Config::create_default();
+                let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
                 psqserver.add_endpoint(
                     "ip",
                     IpEndpoint::new(
@@ -691,6 +692,7 @@ mod tests {
 
                 let mut psqconn = PsqClient::connect(
                     format!("https://{}/", addr).as_str(),
+                    true,
                 ).await.unwrap();
 
                 // Test first with GET which should not be supported on IP tunnel.
@@ -714,6 +716,7 @@ mod tests {
             let client2 = tokio::spawn(async move {
                 let mut psqconn = PsqClient::connect(
                     format!("https://{}/", addr).as_str(),
+                    true,
                 ).await.unwrap();
                 add_client(&mut psqconn, "10.76.0.3", None).await;
             });

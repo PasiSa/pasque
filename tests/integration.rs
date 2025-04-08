@@ -1,13 +1,13 @@
 use std::time::Duration;
 
+use tokio::fs;
 
 use pasque::{
     client::PsqClient,
+    server::{PsqServer, config::Config},
     stream::filestream::{FileStream, Files},
-    server::PsqServer,
-    test_utils::init_logger,
+    test_utils::init_logger
 };
-use tokio::fs;
 
 
 #[test]
@@ -15,9 +15,13 @@ fn test_get_request() {
     init_logger();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let addr = "127.0.0.1:8888";
+    let config = Config::create_default();
     rt.block_on(async {
         let server = tokio::spawn(async move {
-            let mut psqserver = PsqServer::start(addr).await.unwrap();
+            let mut psqserver = PsqServer::start(
+                addr,
+                &config,
+            ).await.unwrap();
             psqserver.add_endpoint(
                 "files", 
                 Files::new(".")).await;
@@ -32,6 +36,7 @@ fn test_get_request() {
         // Run client
         let mut psqconn = PsqClient::connect(
             format!("https://{}/", addr).as_str(),
+            true,
         ).await.unwrap();
         let ret = FileStream::get(
             &mut psqconn,

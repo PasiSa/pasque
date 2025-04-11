@@ -27,13 +27,14 @@ use crate::{
     util::{
         hdrs_to_strings,
         send_quic_packets, 
-        MAX_DATAGRAM_SIZE,
     },
 };
 
 
-/// One HTTP/3 stream established with CONNECT request.
-/// Contains one proxied session/tunnel.
+/// IP tunnel over HTTP/3 connection.
+/// Tunnel is associated with an HTTP/3 stream established with
+/// CONNECT request.
+/// 
 /// See [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484) for more information.
 pub struct IpTunnel {
     stream_id: u64,
@@ -48,20 +49,27 @@ pub struct IpTunnel {
 
 impl IpTunnel {
 
-    /// Sends an HTTP/3 CONNECT request to given QUIC connection, and
-    /// returns created IpTunnel object in response that can be used
-    /// for further tunnel/proxy operations.
-    /// Blocks until response to CONNECT request is processed.
+    /// Connect a new IP tunnel using given HTTP/3 connection, as indicated with
+    /// `pconn`. 
     /// 
-    /// `urlstr` is URL path of the IP proxy endpoint at server. It is
-    /// appended to the base URL used when establishing connection.
+    /// Sends an HTTP/3 CONNECT request, and if successful, returns the created
+    /// IpTunnel object in response that can be used for further tunnel/proxy
+    /// operations. Blocks until response to the CONNECT request is processed.
+    /// 
+    /// `urlstr` is URL path of the IP proxy endpoint at server. It is appended
+    /// to the base URL used when establishing connection.
     pub async fn connect<'a>(
         pconn: &'a mut PsqClient,
         urlstr: &str,
         ifname: &str,
     ) -> Result<&'a IpTunnel, PsqError> {
 
-        let stream_id = Self::start_connection(pconn, urlstr).await?;
+        let url = pconn.get_url().join(urlstr)?;
+        let stream_id = start_connection(
+            pconn,
+            &url,
+            "connect_ip"
+        ).await?;
 
         // Blocks until request is replied and tunnel is set up
         let ret = pconn.add_stream(
@@ -81,30 +89,6 @@ impl IpTunnel {
             },
             Err(e) => Err(e)
         }
-    }
-
-
-    async fn start_connection<'a>(
-        pconn: &'a mut PsqClient,
-        urlstr: &str,
-    ) -> Result<u64, PsqError> {
-
-        let url = pconn.get_url().join(urlstr)?;
-        let req = prepare_h3_request(
-            "CONNECT",
-            "connect-ip",
-            &url,
-        );
-        info!("sending HTTP request {:?}", req);
-
-        let a = pconn.connection();
-        let mut conn = a.lock().await;
-        let h3_conn = pconn.h3_connection().as_mut().unwrap();
-
-        let stream_id = h3_conn
-            .send_request(&mut *conn, &req, true)?;
-
-        Ok(stream_id)
     }
 
 
@@ -163,9 +147,10 @@ impl IpTunnel {
         let stream_id = self.stream_id;
         tokio::spawn(async move {
             loop {
+                // TODO: proper error signaling to main program
                 while let Some(Ok(packet)) = reader.next().await {
                     debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
-                    Self::send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
+                    send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
                     if let Err(e) = send_quic_packets(&conn, &socket).await {
                         error!("Sending QUIC packets failed: {}", e);
                         break;
@@ -239,43 +224,6 @@ impl IpTunnel {
             );
         }
         output
-    }
-
-
-    /// Sends one HTTP/3 Datagram Capsule.
-    fn send_h3_dgram(
-        conn: &mut quiche::Connection,
-        stream_id: u64,
-        buf: &[u8],
-    ) -> Result<(), PsqError> {
-        
-        // currently we limit to stream IDs of max 16383 * 4
-        //let mut data: Vec<u8> = Vec::with_capacity(6 + buf.len());
-        let mut data: [u8; MAX_DATAGRAM_SIZE] = [0; MAX_DATAGRAM_SIZE];
-        let off = 6;
-
-        {
-            let mut octets = octets::OctetsMut::with_slice(data.as_mut_slice());
-
-            octets.put_varint_with_len(Capsule::Datagram as u64, 1)?;
-
-            // Datagram capsule length
-            octets.put_varint_with_len(buf.len() as u64, 2)?;
-
-            // Quarter stream ID
-            // Currently supporting only 2-byte stream IDs, to be extended later
-            octets.put_varint_with_len(stream_id / 4, 2)?;
-
-            // Context ID = 0
-            octets.put_varint_with_len(0, 1)?;
-        }
-
-        // Data
-        let end = off + buf.len();
-        data[off..end].copy_from_slice(buf);
-
-        conn.dgram_send(&data[..end])?;
-        Ok(())
     }
 
 
@@ -559,7 +507,9 @@ impl Endpoint for IpEndpoint {
         stream_id: u64,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
-        check_request_headers(request, "connect-ip")?;
+        for hdr in request {
+            check_common_headers(hdr, "connect-ip")?;
+        }
 
         debug!("Starting IP tunnel");
 
@@ -767,11 +717,11 @@ mod tests {
         });
     }
 
-    async fn add_client(pconn: &mut PsqClient, addr: &str, tunnel: Option<UnixStream>) {
-        let iptunnel = connect_test(
+    async fn add_client(pconn: &mut PsqClient, addr: &str, _tunnel: Option<UnixStream>) {
+        let iptunnel = IpTunnel::connect(
             pconn,
             "ip",
-            tunnel,
+            "tun-c",
         ).await.unwrap();
 
         assert_eq!(
@@ -780,7 +730,7 @@ mod tests {
         );
     }
 
-    async fn connect_test<'a>(
+    /*async fn connect_test<'a>(
         pconn: &'a mut PsqClient,
         urlstr: &str,
         teststream: Option<tokio::net::UnixStream>,
@@ -806,5 +756,5 @@ mod tests {
             },
             Err(e) => Err(e)
         }
-    }
+    }*/
 }

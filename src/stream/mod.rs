@@ -11,8 +11,10 @@ use tokio::{
 };
 
 use crate::{
+    client::PsqClient,
     PsqError,
     VERSION_IDENTIFICATION,
+    util::MAX_DATAGRAM_SIZE,
 };
 
 
@@ -47,7 +49,7 @@ pub trait PsqStream: Any + Send + Sync {
 
 /// Build headers for HTTP/3 requests. If `method` is "CONNECT", `protocol`` needs
 /// to be specified. For other methods it can be empty string.
-pub (crate) fn prepare_h3_request(
+fn prepare_h3_request(
     method: &str,
     protocol: &str,
     url: &url::Url,
@@ -82,7 +84,7 @@ pub (crate) fn prepare_h3_request(
 
 /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
 /// Context ID and capsule length are ignored.
-pub(crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
+pub (crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
     let mut octets = octets::Octets::with_slice(buf);
 
     if octets.get_u8()? != Capsule::Datagram as u8 {
@@ -100,41 +102,40 @@ pub(crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
 }
 
 
-/// Validate request headers assuming a CONNECT request, and check that
-/// `protocol` matches the header.
-pub (crate) fn check_request_headers(
-    request: &[quiche::h3::Header],
+/// Validate request header assuming a CONNECT request, and check that
+/// `protocol` matches the header. Caller of the function calls it one
+/// at a time, for each header received.
+fn check_common_headers(
+    header: &quiche::h3::Header,
     protocol: &str,
 ) -> Result<(), PsqError> {
 
-    for hdr in request {
-        match hdr.name() {
-            b":method" => {
-                if hdr.value() != b"CONNECT" {
-                    return Err(PsqError::HttpResponse(
-                        405,
-                        "Only CONNECT method suppored for this endpoint".to_string(),
-                    ))
-                }
-            },
-            b":protocol" => {
-                if hdr.value() != protocol.as_bytes() {
-                    return Err(PsqError::HttpResponse(
-                        406,  // what would be a proper status code?
-                        format!("Only protocol '{}' supported at this endpoint", protocol),
-                    ))
-                }
+    match header.name() {
+        b":method" => {
+            if header.value() != b"CONNECT" {
+                return Err(PsqError::HttpResponse(
+                    405,
+                    "Only CONNECT method supported for this endpoint".to_string(),
+                ))
             }
-            b"capsule-protocol" => {
-                if hdr.value() != b"?1" {
-                    return Err(PsqError::HttpResponse(
-                        406,  // what would be a proper status code?
-                        "Unsupported capsule protocol".to_string(),
-                    ))
-                }
+        },
+        b":protocol" => {
+            if header.value() != protocol.as_bytes() {
+                return Err(PsqError::HttpResponse(
+                    406,  // what would be a proper status code?
+                    format!("Only protocol '{}' supported at this endpoint", protocol),
+                ))
             }
-            _ => {},
         }
+        b"capsule-protocol" => {
+            if header.value() != b"?1" {
+                return Err(PsqError::HttpResponse(
+                    406,  // what would be a proper status code?
+                    "Unsupported capsule protocol".to_string(),
+                ))
+            }
+        }
+        _ => {},
     }
 
     Ok(())
@@ -157,5 +158,68 @@ fn get_h3_status(headers: &[quiche::h3::Header]) -> Result<u16, PsqError> {
     Err(PsqError::HttpResponse(500, "Missing :status header".to_string()))
 }
 
+
+async fn start_connection<'a>(
+    pconn: &'a mut PsqClient,
+    url: &url::Url,
+    protocol: &str,
+) -> Result<u64, PsqError> {
+
+    // TODO: unit test for unsupported protocol
+    let req = prepare_h3_request(
+        "CONNECT",
+        protocol,
+        &url,
+    );
+    info!("sending HTTP request {:?}", req);
+
+    let a = pconn.connection();
+    let mut conn = a.lock().await;
+    let h3_conn = pconn.h3_connection().as_mut().unwrap();
+
+    let stream_id = h3_conn
+        .send_request(&mut *conn, &req, true)?;
+
+    Ok(stream_id)
+}
+
+
+/// Sends one HTTP/3 Datagram Capsule.
+fn send_h3_dgram(
+    conn: &mut quiche::Connection,
+    stream_id: u64,
+    buf: &[u8],
+) -> Result<(), PsqError> {
+    
+    // currently we limit to stream IDs of max 16383 * 4
+    //let mut data: Vec<u8> = Vec::with_capacity(6 + buf.len());
+    let mut data: [u8; MAX_DATAGRAM_SIZE] = [0; MAX_DATAGRAM_SIZE];
+    let off = 6;
+
+    {
+        let mut octets = octets::OctetsMut::with_slice(data.as_mut_slice());
+
+        octets.put_varint_with_len(Capsule::Datagram as u64, 1)?;
+
+        // Datagram capsule length
+        octets.put_varint_with_len(buf.len() as u64, 2)?;
+
+        // Quarter stream ID
+        // Currently supporting only 2-byte stream IDs, to be extended later
+        octets.put_varint_with_len(stream_id / 4, 2)?;
+
+        // Context ID = 0
+        octets.put_varint_with_len(0, 1)?;
+    }
+
+    // Data
+    let end = off + buf.len();
+    data[off..end].copy_from_slice(buf);
+
+    conn.dgram_send(&data[..end])?;
+    Ok(())
+}
+
 pub mod iptunnel;
 pub mod filestream;
+pub mod udptunnel;

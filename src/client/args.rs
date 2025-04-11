@@ -11,6 +11,7 @@ pub struct Args {
     #[arg(short, long)]
     dest: String,
 
+    /// Do not verify the certificate from server. Use only for development!
     #[arg(long, action = clap::ArgAction::SetTrue)]
     ignore_cert: bool,
 }

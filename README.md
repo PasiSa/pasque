@@ -1,7 +1,8 @@
 # Pasque
 
-An (partial) IP over HTTP/3 implementation (see
-**[RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)**). Built using
+An UDP over HTTP/3 (**[RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298)**)
+and IP over HTTP/3 implementation
+(**[RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)**). Built using
 **[Quiche](https://github.com/cloudflare/quiche/)** as the HTTP/3 & QUIC
 implementation. The project is yet under construction, which probably is obvious
 when browsing the code, and some features are yet missing or not yet fully
@@ -36,5 +37,6 @@ the API.
 
 ## Further information
 
+- **[RFC 9298: Proxying UDP in HTTP](https://datatracker.ietf.org/doc/html/rfc9298)**
 - **[RFC 9484: Proxying IP in HTTP](https://datatracker.ietf.org/doc/html/rfc9484)**
 - **[Masque WG in IETF](https://datatracker.ietf.org/wg/masque/)**

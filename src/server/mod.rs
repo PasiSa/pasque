@@ -32,6 +32,18 @@ use crate::{
 };
 
 
+type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
+
+
+/// The main server that listens to incoming connections.
+pub struct PsqServer {
+    socket: Arc<UdpSocket>,
+    qconfig: quiche::Config,
+    conn_id_seed: ring::hmac::Key,
+    clients: ClientMap,
+    endpoints: Arc<Mutex<Endpoints>>,
+}
+
 impl PsqServer {
 
     /// Configure and start the server at given address and port.
@@ -690,19 +702,6 @@ impl Client {
                 }
         }
     }
-}
-
-
-type ClientMap = HashMap<quiche::ConnectionId<'static>, Client>;
-
-
-/// The main server that listens to incoming connections.
-pub struct PsqServer {
-    socket: Arc<UdpSocket>,
-    qconfig: quiche::Config,
-    conn_id_seed: ring::hmac::Key,
-    clients: ClientMap,
-    endpoints: Arc<Mutex<Endpoints>>,
 }
 
 

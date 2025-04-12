@@ -283,10 +283,20 @@ impl PsqStream for UdpTunnel {
 }
 
 
+/// Server endpoint for UDP tunnel over HTTP/3
+/// (see [RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298)).
 pub struct UdpEndpoint {
 }
 
 impl UdpEndpoint {
+
+    /// Create a new UDP tunnel endpoint that relays UDP datagrams to a given
+    /// destination.
+    /// 
+    /// The endpoint path is appended with DNS name or IP address and port, for
+    /// example if the endpoint prefix is "udp":
+    /// 
+    /// `https://someaddress.org/udp/192.0.2.6/443/`
     pub fn new(
     ) -> Result<Box<dyn Endpoint>, PsqError> {
 

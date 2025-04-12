@@ -467,7 +467,7 @@ impl Encoder<BytesMut> for IpPacketCodec {
 }
 
 
-/// Endpoint for IP tunnel over HTTP/3
+/// Server endpoint for IP tunnel over HTTP/3
 /// (see [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
 pub struct IpEndpoint {
     ipnetwork: IpNetwork,
@@ -477,6 +477,18 @@ pub struct IpEndpoint {
 }
 
 impl IpEndpoint {
+
+    /// Create a new IP tunnel endpoint.
+    /// 
+    /// `local_addr` is the IP address and network prefix length at the server
+    /// side of the end point, e.g., "`10.0.0.1/24`". When new client requests
+    /// come in, they are assigned an IP address from this network prefix.
+    /// 
+    /// `ifprefix` is the prefix for network interface identifier for a TUN
+    /// interface. For each new established tunnel server assigns a new
+    /// interface based on this identifier. For example, if `ifprefix` is
+    /// `tun-s0`, then the individual interfaces are `tun-s0-i0`, `tun-s0-i1`,
+    /// and so on.
     pub fn new(
         local_addr: &str,
         ifprexix: &str,

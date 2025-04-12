@@ -377,7 +377,7 @@ struct PartialResponse {
 
 type Endpoints = HashMap<String, Box<dyn Endpoint>>;
 
-/// One client session to the server.
+/// One client session at the server.
 struct Client {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
@@ -710,6 +710,7 @@ impl Client {
 pub trait Endpoint: Send + Sync {
 
     /// Process incoming HTTP/3 request.
+    /// 
     /// If succesful, returns a [`PsqStream`]-derived object for handling
     /// the follow-up processing of the stream (and related datagrams),
     /// and body that can include, for example, capsules for additional

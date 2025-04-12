@@ -20,14 +20,16 @@ can be tested with normal user rights. To run full tests:
 
 **Starting the server:**
 
-    cargo run --bin psq-server
+    cargo run --bin psq-server -i 10.76.0.1/24
 
-The example program listens
-to UDP port 4433 for incoming HTTP/3 and QUIC connections.
+The example program listens to UDP port 4433 for incoming HTTP/3 and QUIC
+connections. `-i` option enables the IP tunnel at given IP address. Clients are
+allocated IP addresses from the given IP network, hence also the prefix length
+is given.
 
 Starting the client:
 
-    cargo run --bin psq-client -d https://localhost:4433/ip
+    cargo run --bin psq-client -i -d https://localhost:4433
 
 The example program will make a HTTP/3 CONNECT request to set up IP tunnel.
 

@@ -68,7 +68,7 @@ impl IpTunnel {
         let stream_id = start_connection(
             pconn,
             &url,
-            "connect_ip"
+            "connect-ip",
         ).await?;
 
         // Blocks until request is replied and tunnel is set up

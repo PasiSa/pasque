@@ -727,5 +727,4 @@ pub trait Endpoint: Send + Sync {
                 PsqError>;
 }
 
-pub mod args;
 pub mod config;

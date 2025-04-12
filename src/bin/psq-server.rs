@@ -1,9 +1,17 @@
 #[macro_use]
 extern crate log;
 
+use clap::Parser;
+
 use pasque::{
-    server::{PsqServer, args::Args, config::Config},
-    stream::iptunnel::IpEndpoint,
+    server::{
+        config::Config,
+        PsqServer
+    },
+    stream::{
+        iptunnel::IpEndpoint,
+        udptunnel::UdpEndpoint
+    },
 };
 
 
@@ -31,18 +39,56 @@ async fn main() {
     ).await.unwrap();
 
     // Add "ip" endpoint that opens a IP tunnel for incoming CONNECT requests.
-    // Server side of the tunnel has IP address 10.76.0.1. Clients are assigned IP
-    // addresses in the 10.76.0.0/24 network, as deliver in ADDRESS_ASSIGN capsule
-    // in CONNECT response.
-    psqserver.add_endpoint("ip",
-        IpEndpoint::new(
-            "10.76.0.1/24",
-            "tun-s",
-        ).unwrap()
+    // For example, if you start server with option `--ip 10.76.0.1/24`, the
+    // server side of the tunnel has IP address 10.76.0.1, and clients are
+    // assigned IP addresses in the 10.76.0.0/24 network, as deliver in
+    // ADDRESS_ASSIGN capsule in CONNECT response.
+    if args.ip().len() > 0 {
+        psqserver.add_endpoint("ip",
+            IpEndpoint::new(
+                args.ip(),
+                "tun-s",
+            ).unwrap()
+        ).await;
+    }
+
+    // Add "udp" endpoint for proxying UDP sessions. 
+    psqserver.add_endpoint("udp",
+        UdpEndpoint::new().unwrap()
     ).await;
 
     // Loop forever to process incoming QUIC traffic.
     loop {
         psqserver.process().await.unwrap();
+    }
+}
+
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct Args {
+    /// Configuration file to read.
+    #[arg(short, long, default_value = "server.json")]
+    config: String,
+
+    /// IP prefix of IP tunnel endpoint. If not given, IP tunnel is not started.
+    #[arg(short, long, default_value = "")]
+    ip: String,
+}
+
+
+impl Args {
+    pub fn new() -> Args {
+        let args = Args::parse();
+
+        args
+    }
+
+    pub fn config(&self) -> &String {
+        &self.config
+    }
+
+    pub fn ip(&self) -> &String {
+        &self.ip
     }
 }

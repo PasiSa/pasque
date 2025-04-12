@@ -302,5 +302,3 @@ fn hex_dump(buf: &[u8]) -> String {
 
     vec.join("")
 }
-
-pub mod args;

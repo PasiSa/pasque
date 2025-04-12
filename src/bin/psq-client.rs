@@ -5,8 +5,9 @@ extern crate log;
 use clap::Parser;
 
 use pasque::{
-    client::PsqClient,
-    stream::{iptunnel::IpTunnel, udptunnel::UdpTunnel},
+    PsqClient,
+    IpTunnel,
+    UdpTunnel,
 };
 
 #[tokio::main]

@@ -11,12 +11,11 @@ use tokio::{
     sync::{watch, Mutex},
 };
 
+pub use crate::server::config::Config;
+
 use crate::{
     PsqError,
-    server::{
-        config::Config,
-        clientsession::ClientSession,
-    },
+    server::clientsession::ClientSession,
     stream::PsqStream,
     util::{
         MAX_DATAGRAM_SIZE,

@@ -45,7 +45,7 @@ impl UdpTunnel {
     /// 
     /// The established tunnel is connected to UDP socket that will be bound at
     /// `localaddr`. Wildcard addresses are allowed. You can query the actual
-    /// address using the [`sockaddr`] function.
+    /// address using the [`UdpTunnel::sockaddr()`] function.
     pub async fn connect<'a>(
         pconn: &'a mut PsqClient,
         urlstr: &str,

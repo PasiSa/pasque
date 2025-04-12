@@ -4,14 +4,10 @@ extern crate log;
 use clap::Parser;
 
 use pasque::{
-    server::{
-        config::Config,
-        PsqServer
-    },
-    stream::{
-        iptunnel::IpEndpoint,
-        udptunnel::UdpEndpoint
-    },
+    UdpEndpoint,
+    IpEndpoint,
+    PsqServer,
+    server::Config,
 };
 
 

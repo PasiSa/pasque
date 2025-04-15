@@ -36,7 +36,7 @@ is given.
 The server needs a JSON configuration file that gives links to files containing
 TLS certificate and private key are given in a JSON configuration file. The
 configuration file is given with `-c` option. By default, an example
-configuration file **[server-example.rs](src/bin/server-example.rs)** is used,
+configuration file **[server-example.json](src/bin/server-example.json)** is used,
 that contains link to an invalid certificate, but can be used for development
 and testing, if certificate validation is disabled at client.
 

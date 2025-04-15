@@ -18,24 +18,35 @@ TUN-related tests are behind "tuntest" feature, so that the other functionality
 can be tested with normal user rights. To run full tests:
 `sudo cargo test --features tuntest`
 
-**Starting the server:**
+**[psq-client.rs](src/bin/psq-client.rs)** and
+**[psq-server.rs](src/bin/psq-server.rs)** are simple examples on how to use the
+API. They open a UDP tunnel to server host port 9000, and optionally an IP
+tunnel forwarding traffic from the TUN interface to the HTTP/3 connection. Note
+that the latter requires sudo privileges, and is so far tested only on Linux.
 
-    cargo run --bin psq-server -i 10.76.0.1/24
+**Starting the example server:**
+
+    cargo run --bin psq-server -- -i 10.76.0.1/24
 
 The example program listens to UDP port 4433 for incoming HTTP/3 and QUIC
 connections. `-i` option enables the IP tunnel at given IP address. Clients are
 allocated IP addresses from the given IP network, hence also the prefix length
 is given.
 
-Starting the client:
+The server needs a JSON configuration file that gives links to files containing
+TLS certificate and private key are given in a JSON configuration file. The
+configuration file is given with `-c` option. By default, an example
+configuration file **[server-example.rs](src/bin/server-example.rs)** is used,
+that contains link to an invalid certificate, but can be used for development
+and testing, if certificate validation is disabled at client.
 
-    cargo run --bin psq-client -i -d https://localhost:4433
+**Starting the example client:**
 
-The example program will make a HTTP/3 CONNECT request to set up IP tunnel.
+    cargo run --bin psq-client -- -i -d https://localhost:4433
 
-See **[psq-client.rs](src/bin/psq-client.rs)** and
-**[psq-server.rs](src/bin/psq-server.rs)** for simple examples how to use
-the API.
+The example program will make a HTTP/3 CONNECT request to set up IP tunnel. For
+development and testing, if you are testing against a server with invalid
+certificate, use option `--ignore-cert` to disable certificate check.
 
 ## Further information
 

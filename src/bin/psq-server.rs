@@ -64,7 +64,7 @@ async fn main() {
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Configuration file to read.
-    #[arg(short, long, default_value = "server.json")]
+    #[arg(short, long, default_value = "src/bin/server-example.json")]
     config: String,
 
     /// IP prefix of IP tunnel endpoint. If not given, IP tunnel is not started.

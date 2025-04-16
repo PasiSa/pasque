@@ -242,6 +242,7 @@ impl PsqStream for UdpTunnel {
                     return Err(PsqError::HttpResponse(status, "CONNECT request unsuccesful".to_string()))
                 }
                 self.start_socket_listener(&conn, &socket);
+                Ok(())
             },
 
             quiche::h3::Event::Data => {
@@ -254,12 +255,14 @@ impl PsqStream for UdpTunnel {
                         read, self.stream_id
                     );
                 }
+                Ok(())
             },
 
             quiche::h3::Event::Finished => {
                 info!(
-                    "IpTunnel stream finished!"
+                    "UdpTunnel stream finished!"
                 );
+                Err(PsqError::StreamClose("UdpTunnel stream finished".into()))
             },
 
             quiche::h3::Event::Reset(e) => {
@@ -270,15 +273,16 @@ impl PsqStream for UdpTunnel {
 
                 let c = &mut *conn.lock().await;
                 c.close(true, 0x100, b"kthxbye").unwrap();
+                Err(PsqError::StreamClose(format!("UdpTunnel reset by peer: {}", e)))
             },
 
             quiche::h3::Event::PriorityUpdate => unreachable!(),
 
             quiche::h3::Event::GoAway => {
                 info!("GOAWAY");
+                Ok(())
             },
         }
-        Ok(())
     }
 }
 

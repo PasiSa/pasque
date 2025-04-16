@@ -10,6 +10,7 @@ use tokio::{
     time::Duration,
 };
 
+use super::*;
 use crate::{
     PsqError,
     server::Endpoints,
@@ -17,11 +18,7 @@ use crate::{
         process_h3_datagram,
         PsqStream,
     },
-    util::{
-        build_h3_headers,
-        build_h3_response,
-        hdrs_to_strings,
-    },
+    util::hdrs_to_strings,
 };
 
 
@@ -157,9 +154,15 @@ impl ClientSession {
                     );
                 },
 
-                Ok((_stream_id, quiche::h3::Event::Finished)) => (),
+                Ok((stream_id, quiche::h3::Event::Finished)) => {
+                    info!("Stream {} closed", stream_id);
+                    self.remove_stream(&stream_id);
+                },
 
-                Ok((_stream_id, quiche::h3::Event::Reset { .. })) => (),
+                Ok((stream_id, quiche::h3::Event::Reset(e))) => {
+                    error!("Stream {} was reset: {}", stream_id, e);
+                    self.remove_stream(&stream_id);
+                },
 
                 Ok((
                     _prioritized_element_id,
@@ -203,7 +206,7 @@ impl ClientSession {
         self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
             .unwrap();
 
-        let (headers, body) = self.build_response(stream_id, headers).await;
+        let (headers, body, fin) = self.build_response(stream_id, headers).await;
 
         let conn = &mut self.conn.lock().await;
         let http3_conn = &mut self.http3_conn.as_mut().unwrap();
@@ -227,7 +230,7 @@ impl ClientSession {
             },
         }
 
-        let written = match http3_conn.send_body(conn, stream_id, &body, true) {
+        let written = match http3_conn.send_body(conn, stream_id, &body, fin) {
             Ok(v) => v,
 
             Err(quiche::h3::Error::Done) => 0,
@@ -320,7 +323,7 @@ impl ClientSession {
         &mut self,
         stream_id: u64,
         request: &[quiche::h3::Header],
-    ) -> (Vec<quiche::h3::Header>, Vec<u8>) {
+    ) -> (Vec<quiche::h3::Header>, Vec<u8>, bool) {
 
         let mut path = std::path::Path::new("");
 
@@ -346,7 +349,7 @@ impl ClientSession {
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
         match self.endpoints.lock().await.get_mut(&string) {
             Some(endpoint) => {
-                let (status, body) = match endpoint.process_request(
+                let (status, body, fin) = match endpoint.process_request(
                         request,
                         &self.conn,
                         &self.socket,
@@ -358,24 +361,29 @@ impl ClientSession {
                             // if the stream can be fully served right away.
                             self.streams.insert(stream_id, stream.unwrap());
                         }
-                        (200, body)
+                        (200, body, false)
                     },
                     Err(PsqError::HttpResponse(status, body)) => {
                         warn!("Http Response with error {}: {}", status, body);
-                        (status, body.as_bytes().to_vec())
+                        (status, body.as_bytes().to_vec(), true)
                     },
                     Err(e) => {
                         error!("Error processing request: {}", e);
-                        (500, format!("Error processing request: {}", e).as_bytes().to_vec())
+                        (500, format!("Error processing request: {}", e).as_bytes().to_vec(), true)
                     },
                 };
-                (build_h3_headers(status, &body), body)
+                (build_h3_resp_headers(status, &body), body, fin)
             }
             None => {
                 let body = format!("Not Found: {}", string).as_bytes().to_vec();
-                (build_h3_headers(404, &body), body)
+                (build_h3_resp_headers(404, &body), body, true)
                 }
         }
+    }
+
+
+    fn remove_stream(&mut self, stream_id: &u64) {
+        self.streams.remove(stream_id);
     }
 }
 

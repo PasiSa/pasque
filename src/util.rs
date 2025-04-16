@@ -8,7 +8,7 @@ use tokio::{
     time::{sleep, Duration},
 };
 
-use crate::{PsqError, VERSION_IDENTIFICATION};
+use crate::PsqError;
 
 pub const MAX_DATAGRAM_SIZE: usize = 1350;
 
@@ -79,27 +79,6 @@ pub (crate) fn timeout_watcher(
             }
         }
     });
-}
-
-
-pub (crate) fn build_h3_headers(status: u16, body: &Vec<u8>) -> Vec<quiche::h3::Header> {
-    let headers = vec![
-        quiche::h3::Header::new(b":status", status.to_string().as_bytes()),
-        quiche::h3::Header::new(b"server", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
-        // lazily include capsule-protocol in all responses (also GET)
-        quiche::h3::Header::new(b"capsule-protocol", b"?1"),
-        quiche::h3::Header::new(
-            b"content-length",
-            body.len().to_string().as_bytes(),
-        ),
-    ];
-    headers
-}
-
-
-pub (crate) fn build_h3_response(status: u16, msg: &str) -> (Vec<quiche::h3::Header>, Vec<u8>) {
-    let body = msg.as_bytes().to_vec();
-    (build_h3_headers(status, &body), body)
 }
 
 

@@ -178,7 +178,7 @@ async fn start_connection<'a>(
     let h3_conn = pconn.h3_connection().as_mut().unwrap();
 
     let stream_id = h3_conn
-        .send_request(&mut *conn, &req, true)?;
+        .send_request(&mut *conn, &req, false)?;
 
     Ok(stream_id)
 }

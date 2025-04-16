@@ -94,6 +94,9 @@ pub enum PsqError {
     #[error("HTTP response error: {0}")]
     HttpResponse(u16, String),
 
+    #[error("Stream closing: {0}")]
+    StreamClose(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 

@@ -225,7 +225,16 @@ impl PsqClient {
 
         // Ensure that the HTTP request gets actually sent
         send_quic_packets(&self.conn, &self.socket).await?;
-        while !self.streams.get(&stream_id).unwrap().is_ready() {
+        loop {
+            let pstream = match self.streams.get(&stream_id) {
+                Some(pstream) => pstream,
+                None => return Err(
+                    PsqError::StreamClose(format!("Stream {} removed", stream_id))
+                ),
+            };
+            if pstream.is_ready() {
+                break;
+            }
             self.process().await?;
         }
         Ok(self.streams.get(&stream_id).unwrap())
@@ -263,13 +272,20 @@ impl PsqClient {
                 Ok((stream_id, event)) => {
                     let stream = self.streams.get_mut(&stream_id);
                     if stream.is_some() {
-                        stream.unwrap().process_h3_response(
+                        if let Err(e) = stream.unwrap().process_h3_response(
                             &mut self.h3_conn.as_mut().unwrap(),
                             &self.conn,
                             &self.socket,
                             event,
                             buf
-                        ).await?;
+                        ).await {
+                            match e {
+                                PsqError::StreamClose(_) => {
+                                    self.remove_stream(&stream_id);
+                                },
+                                _ => return Err(e)
+                            }
+                        }
                     } else {
                         error!("Received unknown stream ID: {}", stream_id);
                         continue;
@@ -286,6 +302,12 @@ impl PsqClient {
                 },
             }
         }
+    }
+
+
+    fn remove_stream(&mut self, stream_id: &u64) {
+        debug!("Removing stream: {}", stream_id);
+        self.streams.remove(stream_id);
     }
 
 

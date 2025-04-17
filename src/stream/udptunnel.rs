@@ -129,7 +129,7 @@ impl UdpTunnel {
 
         let stream_id = self.stream_id;
 
-        let handle = tokio::spawn(async move {
+        self.taskhandle = Some(tokio::spawn(async move {
             let mut buf = [0u8; MAX_DATAGRAM_SIZE];
             loop {
                 let defined;
@@ -140,8 +140,6 @@ impl UdpTunnel {
                     true => socket.recv(&mut buf).await?,
                     false => {
                         let ret = socket.recv_from(&mut buf).await?;
-                        debug!("hee");
-                        //let mut addrguard = clientaddr.lock().await;
                         *clientaddr.lock().await = Some(ret.1);
                         socket.connect(ret.1).await?;
                         ret.0
@@ -151,8 +149,7 @@ impl UdpTunnel {
                 send_h3_dgram(&mut *qconn.lock().await, stream_id, &buf[..n])?;
                 send_quic_packets(&qconn, &qsocket).await?;
             };
-        });
-        self.taskhandle = Some(handle);
+        }));
     }
 
 
@@ -183,6 +180,15 @@ impl UdpTunnel {
         } else {
             // No task running
             None
+        }
+    }
+}
+
+impl Drop for UdpTunnel {
+    fn drop(&mut self) {
+        debug!("Dropping IpTunnel");
+        if let Some(task) = &self.taskhandle {
+            task.abort();
         }
     }
 }
@@ -283,6 +289,10 @@ impl PsqStream for UdpTunnel {
                 Ok(())
             },
         }
+    }
+
+    fn stream_id(&self) -> u64 {
+        self.stream_id
     }
 }
 

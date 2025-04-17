@@ -192,6 +192,10 @@ impl PsqStream for FileStream {
             },
         }
     }
+
+    fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
 }
 
 /// Endpoint for serving files based on incoming GET requests.

@@ -281,7 +281,7 @@ impl PsqClient {
                         ).await {
                             match e {
                                 PsqError::StreamClose(_) => {
-                                    self.remove_stream(&stream_id);
+                                    self.remove_stream(stream_id).await;
                                 },
                                 _ => return Err(e)
                             }
@@ -305,9 +305,16 @@ impl PsqClient {
     }
 
 
-    fn remove_stream(&mut self, stream_id: &u64) {
+    /// Shuts down stream with given stream ID.
+    /// 
+    /// Also cleans up all resources used by the stream. If the given stream is not
+    /// active anymore, this function does not do anything.
+    pub async fn remove_stream(&mut self, stream_id: u64) {
         debug!("Removing stream: {}", stream_id);
-        self.streams.remove(stream_id);
+        if let Err(e) = self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0) {
+            warn!("Could not send shutdown message: {}", e);
+        }
+        self.streams.remove(&stream_id);
     }
 
 

@@ -156,12 +156,12 @@ impl ClientSession {
 
                 Ok((stream_id, quiche::h3::Event::Finished)) => {
                     info!("Stream {} closed", stream_id);
-                    self.remove_stream(&stream_id);
+                    self.remove_stream(stream_id).await;
                 },
 
                 Ok((stream_id, quiche::h3::Event::Reset(e))) => {
                     error!("Stream {} was reset: {}", stream_id, e);
-                    self.remove_stream(&stream_id);
+                    self.remove_stream(stream_id).await;
                 },
 
                 Ok((
@@ -199,12 +199,6 @@ impl ClientSession {
             hdrs_to_strings(headers),
             stream_id
         );
-
-        // We decide the response based on headers alone, so stop reading the
-        // request stream so that any body is ignored and pointless Data events
-        // are not generated.
-        self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
-            .unwrap();
 
         let (headers, body, fin) = self.build_response(stream_id, headers).await;
 
@@ -382,8 +376,11 @@ impl ClientSession {
     }
 
 
-    fn remove_stream(&mut self, stream_id: &u64) {
-        self.streams.remove(stream_id);
+    async fn remove_stream(&mut self, stream_id: u64) {
+        if let Err(e) = self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0) {
+            warn!("Could not send shutdown message: {}", e);
+        }
+        self.streams.remove(&stream_id);
     }
 }
 

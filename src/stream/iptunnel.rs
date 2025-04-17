@@ -14,7 +14,7 @@ use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use tokio::{
     io::AsyncWriteExt,
     net::UdpSocket,
-    sync::Mutex,
+    sync::Mutex, task::JoinHandle,
 };
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
@@ -42,6 +42,7 @@ pub struct IpTunnel {
     ifname: String,
     local_addr: Option<IpNetwork>,
     remote_addr: Option<IpNetwork>,
+    tuntask: Option<JoinHandle<()>>,
 
     /// For testing support: tunneled packets are optionally written here
     teststream: Option<tokio::net::UnixStream>,
@@ -80,6 +81,7 @@ impl IpTunnel {
                 ifname: ifname.to_string(),
                 local_addr: None,
                 remote_addr: None,
+                tuntask: None,
                 teststream: None,
              })
         ).await;
@@ -105,6 +107,7 @@ impl IpTunnel {
             ifname: ifname.to_string(),
             local_addr: Some(local_addr),
             remote_addr: Some(remote_addr),
+            tuntask: None,
             teststream: None,
          })
     }
@@ -145,7 +148,7 @@ impl IpTunnel {
         self.tunwriter = Some(writer);
 
         let stream_id = self.stream_id;
-        tokio::spawn(async move {
+        self.tuntask = Some(tokio::spawn(async move {
             loop {
                 // TODO: proper error signaling to main program
                 while let Some(Ok(packet)) = reader.next().await {
@@ -157,7 +160,7 @@ impl IpTunnel {
                     }
                 }
             }
-        });
+        }));
         Ok(())
     }
 
@@ -438,6 +441,20 @@ impl PsqStream for IpTunnel {
                 info!("GOAWAY");  // TODO: process somehow
                 Ok(())
             },
+        }
+    }
+
+
+    fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
+}
+
+impl Drop for IpTunnel {
+    fn drop(&mut self) {
+        debug!("Dropping IpTunnel");
+        if let Some(task) = &self.tuntask {
+            task.abort();
         }
     }
 }

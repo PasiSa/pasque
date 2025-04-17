@@ -44,6 +44,11 @@ pub trait PsqStream: Any + Send + Sync {
         event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError>;
+
+    /// Stream ID of the CONNECT request that initiated this tunnel or proxy session.
+    /// 
+    /// The stream remains open until the tunnel is closed, as required by RFC.
+    fn stream_id(&self) -> u64;
 }
 
 

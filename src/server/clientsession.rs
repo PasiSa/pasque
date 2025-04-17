@@ -106,7 +106,7 @@ impl ClientSession {
         let mut buf = [0; 10000];  // TODO: change proper size
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
-                debug!("Datagram received, {} bytes", n);
+                //debug!("Datagram received, {} bytes", n);
                 let (stream_id, offset) = match process_h3_datagram(&buf) {
                     Ok((stream, off)) => (stream, off),
                     Err(e) => {

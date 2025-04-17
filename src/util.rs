@@ -70,7 +70,7 @@ pub (crate) fn timeout_watcher(
                 }
                 changed = rx.changed() => {
                     if changed.is_ok() {
-                        debug!("[Watcher] Timeout changed to {:?}", *rx.borrow());
+                        //debug!("[Watcher] Timeout changed to {:?}", *rx.borrow());
                         continue;
                     } else {
                         break; // channel closed

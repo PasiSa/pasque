@@ -8,8 +8,11 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::{BytesMut, BufMut};
-use futures::stream::{SplitSink, StreamExt};
-use futures::sink::SinkExt;
+use futures::{
+    FutureExt,
+    sink::SinkExt,
+    stream::{SplitSink, StreamExt},
+};
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use tokio::{
     io::AsyncWriteExt,
@@ -42,7 +45,7 @@ pub struct IpTunnel {
     ifname: String,
     local_addr: Option<IpNetwork>,
     remote_addr: Option<IpNetwork>,
-    tuntask: Option<JoinHandle<()>>,
+    tuntask: Option<JoinHandle<Result<(), PsqError>>>,
 
     /// For testing support: tunneled packets are optionally written here
     teststream: Option<tokio::net::UnixStream>,
@@ -153,7 +156,7 @@ impl IpTunnel {
                 // TODO: proper error signaling to main program
                 while let Some(Ok(packet)) = reader.next().await {
                     debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
-                    send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).unwrap();
+                    send_h3_dgram(&mut *conn.lock().await, stream_id, &packet)?;
                     if let Err(e) = send_quic_packets(&conn, &socket).await {
                         error!("Sending QUIC packets failed: {}", e);
                         break;
@@ -162,6 +165,37 @@ impl IpTunnel {
             }
         }));
         Ok(())
+    }
+
+
+    fn check_task_error(&mut self) -> Option<PsqError> {
+        if let Some(handle) = &mut self.tuntask {
+            if let Some(result) = handle.now_or_never() {
+                match result {
+                    Ok(Ok(())) => {
+                        debug!("Background task completed successfully.");
+                        self.tuntask = None;
+                        None
+                    }
+                    Ok(Err(e)) => {
+                        error!("Background task returned error: {}", e);
+                        self.tuntask = None;
+                        Some(e)
+                    }
+                    Err(join_err) => {
+                        error!("Background task panicked: {}", join_err);
+                        self.tuntask = None;
+                        Some(PsqError::Custom("Task panicked".to_string()))
+                    }
+                }
+            } else {
+                // Task still running
+                None
+            }
+        } else {
+            // No task running
+            None
+        }
     }
 
 
@@ -332,6 +366,12 @@ impl IpTunnel {
 #[async_trait]
 impl PsqStream for IpTunnel {
     async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError> {
+        // check if Tokio reader task is still running
+        if let Some(e) = self.check_task_error() {
+            error!("IP tunnel reader task failed: {}", e);
+            return Err(e)
+        }
+
         if self.tunwriter.is_some() {
             debug!("Writing to TUN: {}", Self::packet_output(&buf, buf.len()));
             let packet = BytesMut::from(&buf[..]);

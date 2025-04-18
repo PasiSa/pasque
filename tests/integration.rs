@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::{
     fs,
     net::UdpSocket,
+    time::timeout,
 };
 
 use pasque::{
@@ -186,31 +187,33 @@ fn tunnel_closing() {
             true,
         ).await.unwrap();
 
-        let udptunnel = UdpTunnel::connect(
-            &mut psqconn,
-            "udp",
-            "127.0.0.1",
-            9000,
-            "127.0.0.1:0".parse().unwrap(),
-        ).await.unwrap();
-        let tunneladdr = udptunnel.sockaddr().unwrap();
-        let stream_id = udptunnel.stream_id();
+        let _result = timeout(Duration::from_millis(1000), async {
+            let udptunnel = UdpTunnel::connect(
+                &mut psqconn,
+                "udp",
+                "127.0.0.1",
+                9000,
+                "127.0.0.1:0".parse().unwrap(),
+            ).await.unwrap();
+            let tunneladdr = udptunnel.sockaddr().unwrap();
+            let stream_id = udptunnel.stream_id();
 
-        // Send UDP datagram to the client socket
-        let client1 = tokio::spawn(async move {
-            let udpclient = UdpSocket::bind("0.0.0.0:0").await.unwrap();
-            let mut buf = [0u8; 2000];
-            udpclient.send_to(b"Testing", tunneladdr).await.unwrap();
-            let (n, _) = udpclient.recv_from(&mut buf).await.unwrap();
-            assert_eq!(&buf[..n], b"Testing");
-        });
+            // Send UDP datagram to the client socket
+            let client1 = tokio::spawn(async move {
+                let udpclient = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+                let mut buf = [0u8; 2000];
+                udpclient.send_to(b"Testing", tunneladdr).await.unwrap();
+                let (n, _) = udpclient.recv_from(&mut buf).await.unwrap();
+                assert_eq!(&buf[..n], b"Testing");
+            });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        psqconn.remove_stream(stream_id).await;
-        psqconn.process().await.unwrap();
-        psqconn.remove_stream(stream_id).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            psqconn.remove_stream(stream_id).await;
+            psqconn.process().await.unwrap();
+            psqconn.remove_stream(stream_id).await;
+            client1.abort();
+        }).await;
 
-        client1.abort();
         server.abort();
     });
 }

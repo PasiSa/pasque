@@ -61,7 +61,7 @@ impl PsqServer {
             .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)?;
 
         // TODO: need idle timeout and have some keep-alive to clean up disappeared clients
-        //config.set_max_idle_timeout(5000);
+        qconfig.set_max_idle_timeout(10 * 60 * 1000);  // 10 minutes
         qconfig.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
         qconfig.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
         qconfig.set_initial_max_data(10_000_000);
@@ -92,7 +92,6 @@ impl PsqServer {
     pub async fn process(&mut self) -> Result<(), PsqError> {
         let mut buf = [0; 65535];
 
-        //let (len, from) = self.socket.recv_from(&mut buf).await?;
         let (len, from) = match self.socket.recv_from(&mut buf).await {
             Ok(v) => v,
 
@@ -202,7 +201,7 @@ impl PsqServer {
             // instead of changing it again.
             let scid = hdr.dcid.clone();
 
-            debug!("New connection: dcid={:?} scid={:?}", hdr.dcid, scid);
+            debug!("New connection: IP={} dcid={:?} scid={:?}", from, hdr.dcid, scid);
 
             let local_addr = self.socket.local_addr().unwrap();
             let conn = quiche::accept(

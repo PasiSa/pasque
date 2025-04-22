@@ -587,6 +587,7 @@ impl Endpoint for IpEndpoint {
         debug!("Starting IP tunnel");
 
         let addr = IpNetwork::V4(Ipv4Network::new(self.addrpool.next()?, 32)?);
+        info!("Assigning remote address {}", addr);
 
         let tunif = format!("{}-i{}", self.ifprefix, self.tuncount);
         let mut iptunnel = Box::new(IpTunnel::new(

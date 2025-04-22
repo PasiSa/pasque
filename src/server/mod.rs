@@ -112,7 +112,7 @@ impl PsqServer {
 
             Err(e) => {
                 error!("Parsing packet header failed: {:?}", e);
-                return Err(PsqError::Quiche(e))
+                return Ok(())  // Just ignore, no panic
             },
         };
 
@@ -131,7 +131,7 @@ impl PsqServer {
 
             if hdr.ty != quiche::Type::Initial {
                 error!("Packet is not Initial");
-                return Err(PsqError::Custom("Packet not initial".to_string()))
+                return Ok(())  // Just ignore, no panic
             }
 
             if !quiche::version_is_supported(hdr.version) {
@@ -189,19 +189,19 @@ impl PsqServer {
             // drop the packet.
             if odcid.is_none() {
                 error!("Invalid address validation token");
-                return Err(PsqError::Custom("Invalid address validation token".to_string()))
+                return Ok(())  // Just ignore, no panic
             }
 
             if scid.len() != hdr.dcid.len() {
                 error!("Invalid destination connection ID");
-                return Err(PsqError::Custom("Invalid destination connection ID".to_string()))
+                return Ok(())  // Just ignore, no panic
             }
 
             // Reuse the source connection ID we sent in the Retry packet,
             // instead of changing it again.
             let scid = hdr.dcid.clone();
 
-            debug!("New connection: IP={} dcid={:?} scid={:?}", from, hdr.dcid, scid);
+            info!("New connection: IP={} dcid={:?} scid={:?}", from, hdr.dcid, hdr.scid);
 
             let local_addr = self.socket.local_addr().unwrap();
             let conn = quiche::accept(
@@ -220,15 +220,7 @@ impl PsqServer {
                 tx,
                 &self.endpoints,
             );
-            /*let client = ClientSession {
-                socket: Arc::clone(&self.socket),
-                conn: Arc::new(Mutex::new(conn)),
-                http3_conn: None,
-                partial_responses: HashMap::new(),
-                timeout_tx: tx,
-                streams: HashMap::new(),
-                endpoints: Arc::clone(&self.endpoints),
-            };*/
+
             timeout_watcher(
                 Arc::clone(&client.connection()),
                 Arc::clone(&self.socket),

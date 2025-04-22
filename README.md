@@ -28,8 +28,9 @@ that the latter requires sudo privileges, and is so far tested only on Linux.
 
     cargo run --bin psq-server -- -i 10.76.0.1/24
 
-The example program listens to UDP port 4433 for incoming HTTP/3 and QUIC
-connections. `-i` option enables the IP tunnel at given IP address. Clients are
+The example server listens to UDP port 443 for incoming HTTP/3 and QUIC
+connections (use `-a` option to change the address and port to bind).
+`-i` option enables the IP tunnel at given IP address. Clients are
 allocated IP addresses from the given IP network, hence also the prefix length
 is given.
 

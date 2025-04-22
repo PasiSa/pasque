@@ -30,7 +30,7 @@ async fn main() {
 
     // Start server, bind to IPv4 any address, listen to UDP port 4433.
     let mut psqserver = PsqServer::start(
-        "0.0.0.0:4433",
+        &args.address(),
         &config,
     ).await.unwrap();
 
@@ -63,6 +63,10 @@ async fn main() {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Args {
+    /// Local IP address and UDP port to bind.
+    #[arg(short, long, default_value = "0.0.0.0:443")]
+    address: String,
+
     /// Configuration file to read.
     #[arg(short, long, default_value = "src/bin/server-example.json")]
     config: String,
@@ -78,6 +82,10 @@ impl Args {
         let args = Args::parse();
 
         args
+    }
+
+    pub fn address(&self) -> &String {
+        &self.address
     }
 
     pub fn config(&self) -> &String {

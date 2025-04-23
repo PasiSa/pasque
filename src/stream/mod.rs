@@ -19,7 +19,6 @@ use crate::{
 
 
 pub (crate) enum Capsule {
-    Datagram = 0x00,
     AddressAssign = 0x01,
 }
 
@@ -91,13 +90,6 @@ fn prepare_h3_request(
 /// Context ID and capsule length are ignored.
 pub (crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
     let mut octets = octets::Octets::with_slice(buf);
-
-    if octets.get_u8()? != Capsule::Datagram as u8 {
-        // Not HTTP datagram
-        return Err(PsqError::H3Capsule("Not HTTP Datagram".to_string()))
-    }
-
-    let _length = octets.get_varint()?;  // not in use at the moment
 
     let stream_id: u64 = octets.get_varint()? * 4;
 
@@ -199,15 +191,10 @@ fn send_h3_dgram(
     // currently we limit to stream IDs of max 16383 * 4
     //let mut data: Vec<u8> = Vec::with_capacity(6 + buf.len());
     let mut data: [u8; MAX_DATAGRAM_SIZE] = [0; MAX_DATAGRAM_SIZE];
-    let off = 6;
+    let off = 3;
 
     {
         let mut octets = octets::OctetsMut::with_slice(data.as_mut_slice());
-
-        octets.put_varint_with_len(Capsule::Datagram as u64, 1)?;
-
-        // Datagram capsule length
-        octets.put_varint_with_len(buf.len() as u64, 2)?;
 
         // Quarter stream ID
         // Currently supporting only 2-byte stream IDs, to be extended later

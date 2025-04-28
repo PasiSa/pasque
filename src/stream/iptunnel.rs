@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     collections::HashSet,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     str::FromStr,
     sync::Arc
 };
@@ -14,6 +14,7 @@ use futures::{
     stream::{SplitSink, StreamExt},
 };
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use octets::Octets;
 use tokio::{
     io::AsyncWriteExt,
     net::UdpSocket,
@@ -25,12 +26,13 @@ use tun::AsyncDevice;
 use super::*;
 use crate::{
     client::PsqClient,
-    PsqError,
+    platform,
     server::Endpoint,
     util::{
         hdrs_to_strings,
         send_quic_packets, 
     },
+    PsqError,
 };
 
 
@@ -135,7 +137,6 @@ impl IpTunnel {
         let conn = Arc::clone(origconn);
         let socket = Arc::clone(origsocket);
 
-
         let mut config = tun::Configuration::default();
         config
             .tun_name(ifname)   // Interface name
@@ -201,10 +202,10 @@ impl IpTunnel {
 
     /// Add ADDRESS_ASSIGN capsule to the given buffer. Return the size of
     /// capsule in bytes, or error.
-    pub (crate) fn add_address_assign_cap(
+    fn address_assign_capsule(
         &self,
         buf: &mut Vec<u8>,
-    ) -> Result<usize, PsqError>{
+    ) -> Result<usize, PsqError> {
 
         if self.remote_addr.is_none() {
             return Err(PsqError::Custom("IP Address not defined".to_string()))
@@ -217,7 +218,7 @@ impl IpTunnel {
         };
 
         octets.put_varint_with_len(Capsule::AddressAssign as u64, 1)?;
-        octets.put_varint_with_len(addrlen + 3 as u64, 1)?;
+        octets.put_varint_with_len(addrlen + 3 as u64, 2)?;
 
         // For the time being only single IP address is supported
         octets.put_varint_with_len(0, 1)?;  // Request ID == 0
@@ -233,6 +234,29 @@ impl IpTunnel {
             }
         }
         octets.put_u8(self.remote_addr.unwrap().prefix())?;
+
+        Ok(octets.off())
+    }
+
+
+    fn route_advertisement_capsule(
+        &self,
+        dstbuf: &mut Vec<u8>,
+        offset: usize,
+        srcbuf: &Vec<u8>,
+    ) -> Result<usize, PsqError> {
+
+        // TODO: this function should be reimplemented with the new zero-copy methods
+        if srcbuf.len() <= 3 {
+            // No addresses to advertise
+            return Ok(0)
+        }
+        let len = srcbuf.len();
+        let mut octets = octets::OctetsMut::with_slice(&mut dstbuf[offset..]);
+
+        octets.put_varint_with_len(Capsule::RouteAdvertisement as u64, 1)?;
+        octets.put_varint_with_len(len as u64, 2)?;
+        octets.put_bytes(&srcbuf)?;  // TODO: should apply zero-copy bufs instead
 
         Ok(octets.off())
     }
@@ -264,24 +288,110 @@ impl IpTunnel {
     }
 
 
-    /// Process one capsule at given buffer. For the time being,
-    /// only ADDRESS_ASSIGN is supported. Both IPv4 and IPv6 are supported,
+    /// Process one capsule at given buffer. Both IPv4 and IPv6 are supported,
     /// although the `tun` crate does not currently support IPv6.
     /// Returns size of the capsule in bytes, or error.
     /// If there is an unknown capsule type, it is silently ignored (with log message).
     fn process_h3_capsule(&mut self, buf: &[u8]) -> Result<usize, PsqError> {
         let mut octets = octets::Octets::with_slice(buf);
 
-        let captype = octets.get_u8()?;
+        let captype = octets.get_varint()?;
         let len = octets.get_varint()?;
-        if captype != Capsule::AddressAssign as u8 {
-            warn!("Ignoring unknown capsule type: {:02x}, length: {}", captype, len);
-            octets.get_bytes(len as usize)?;  // just ignore
-            return Ok(octets.off());
-        }
+        debug!("Processing capsule type: {:02x}, length: {}", captype, len);
+
         if len + 2 > buf.len() as u64 {
             return Err(PsqError::H3Capsule("Truncated capsule received".to_string()))
         }
+
+        let offset = match Capsule::try_from(captype) {
+            Ok(Capsule::AddressAssign) => {
+                self.process_address_assign(&mut octets, len)?
+            },
+            Ok(Capsule::RouteAdvertisement) => {
+                self.process_route_advertisement(&mut octets, len)?
+            },
+            Err(_) => {
+                warn!("Ignoring unknown capsule type: {:02x}, length: {}", captype, len);
+                octets.skip(len as usize)?;
+                octets.off()
+            },
+        };
+        Ok(offset)
+    }
+
+
+    fn octets_to_ipv4(octets: &mut Octets) -> Result<Ipv4Addr, PsqError> {
+        Ok(std::net::Ipv4Addr::new(
+            octets.get_u8()?, octets.get_u8()?,
+            octets.get_u8()?, octets.get_u8()?,
+        ))
+    }
+
+
+    fn octets_to_ipv6(octets: &mut Octets) -> Result<Ipv6Addr, PsqError> {
+        Ok(std::net::Ipv6Addr::new(
+            octets.get_u16()?, octets.get_u16()?,
+            octets.get_u16()?, octets.get_u16()?,
+            octets.get_u16()?, octets.get_u16()?,
+            octets.get_u16()?, octets.get_u16()?,
+        ))
+    }
+
+
+    fn ipv4_range_to_cidr(start: Ipv4Addr, end: Ipv4Addr) -> Option<String> {
+        let start = u32::from(start);
+        let end = u32::from(end);
+
+        for prefix in (0..=32).rev() {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                !((1u32 << (32 - prefix)) - 1)
+            };
+            let network = start & mask;
+            let broadcast = network | !mask;
+
+            if start >= network && end <= broadcast {
+                return match Ipv4Network::new(Ipv4Addr::from(network), prefix) {
+                    Ok(ip) => Some(ip.to_string()),
+                    Err(_) => None,
+                }
+            }
+        }
+        None
+    }
+
+
+    fn ipv6_range_to_cidr(start: Ipv6Addr, end: Ipv6Addr) -> Option<String> {
+        let start = u128::from(start);
+        let end = u128::from(end);
+    
+        for prefix in (0..=128).rev() {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                !((1u128 << (128 - prefix)) - 1)
+            };
+            let network = start & mask;
+            let broadcast = network | !mask;
+
+            if start >= network && end <= broadcast {
+                return match Ipv6Network::new(Ipv6Addr::from(network), prefix) {
+                    Ok(ip) => Some(ip.to_string()),
+                    Err(_) => None,
+                }
+            }
+        }
+        None
+    }
+
+
+    fn process_address_assign(
+        &mut self,
+        octets: &mut Octets,
+        len: u64,
+    ) -> Result<usize, PsqError> {
+
         octets.get_varint()?;  // Request ID is ignored for now
         
         let ipver = octets.get_u8()?;
@@ -290,10 +400,7 @@ impl IpTunnel {
                 if len < 3 + 4 {
                     return Err(PsqError::H3Capsule("Invalid capsule length".to_string()))
                 }
-                let v4 = std::net::Ipv4Addr::new(
-                    octets.get_u8()?, octets.get_u8()?,
-                    octets.get_u8()?, octets.get_u8()?,
-                );
+                let v4 = Self::octets_to_ipv4(octets)?;
                 let prefix = octets.get_u8()?;
                 self.local_addr = match Ipv4Network::new(v4, prefix) {
                     Ok(ip) => Some(IpNetwork::V4(ip)),
@@ -320,13 +427,7 @@ impl IpTunnel {
                 if len < 3 + 16 {
                     return Err(PsqError::H3Capsule("Invalid capsule length".to_string()))
                 }
-                let v6 = std::net::Ipv6Addr::new(
-                    octets.get_u16()?, octets.get_u16()?,
-                    octets.get_u16()?, octets.get_u16()?,
-                    octets.get_u16()?, octets.get_u16()?,
-                    octets.get_u16()?, octets.get_u16()?,
-
-                );
+                let v6 = Self::octets_to_ipv6(octets)?;
                 let prefix = octets.get_u8()?;
                 self.local_addr = match Ipv6Network::new(v6, prefix) {
                     Ok(ip) => Some(IpNetwork::V6(ip)),
@@ -353,11 +454,73 @@ impl IpTunnel {
                 }
             },
             n => {
-                return Err(PsqError::H3Capsule(format!("Invalid IP version: {}", n)))
+                return Err(PsqError::H3Capsule(format!("Address assign: Invalid IP version: {}", n)))
             }
         };
 
         debug!("IP address assigned: {}", self.local_addr.unwrap().ip());
+        Ok(octets.off())
+    }
+
+
+    fn process_route_advertisement(
+        &mut self,
+        octets: &mut Octets,
+        len: u64,
+    ) -> Result<usize, PsqError> {
+        let mut remaining = len;
+        while remaining >= 10 {
+            if self.remote_addr.is_none() {
+                return Err(PsqError::Custom(
+                    "Cannot assign route before tunnel address is known".to_string()
+                ))
+            }
+            let networking = platform::get_os_networking();
+
+            let ipver = octets.get_u8()?;
+            match ipver {
+                4 => {
+                    // TODO: check that end_ip >= start_ip
+                    let start_ip = Self::octets_to_ipv4(octets)?;
+                    let end_ip = Self::octets_to_ipv4(octets)?;
+                    let _proto = octets.get_u8()?;  // For the time being protocol is ignored
+                    remaining -= 10;
+
+                    if let Some(destination) = Self::ipv4_range_to_cidr(start_ip, end_ip) {
+                        networking.add_route(destination.as_str(), &self.ifname)?;
+                    } else {
+                        return Err(PsqError::Custom(
+                            format!(
+                                "Route advertisement: Invalid IPv6 address range: {} - {}",
+                                start_ip.to_string(), end_ip.to_string()
+                            )
+                        ))
+                    }
+                },
+                6 => {
+                    // TODO: check that end_ip >= start_ip
+                    let start_ip = Self::octets_to_ipv6(octets)?;
+                    let end_ip = Self::octets_to_ipv6(octets)?;
+                    let _proto = octets.get_u8()?;  // For the time being protocol is ignored
+                    remaining -= 34;
+
+                    if let Some(destination) = Self::ipv6_range_to_cidr(start_ip, end_ip) {
+                        networking.add_route(destination.as_str(), &self.ifname)?;
+                    } else {
+                        return Err(PsqError::Custom(
+                            format!(
+                                "Route advertisement: Invalid IPv6 address range: {} - {}",
+                                start_ip.to_string(), end_ip.to_string()
+                            )
+                        ))
+                    }
+                    
+                },
+                n => {
+                    return Err(PsqError::H3Capsule(format!("Route advertisement: Invalid IP version: {}", n)))
+                }
+            };
+        }
         Ok(octets.off())
     }
 }
@@ -435,23 +598,25 @@ impl PsqStream for IpTunnel {
                         read, self.stream_id
                     );
 
-                    // We assume that there is an ADDRESS_ASSIGN capsule from server
+                    // We assume that there is at least an ADDRESS_ASSIGN capsule
+                    // from server. There may also be other capsules.
                     // For now, client does not choose address
                     let mut off = 0;
                     while off < read {
                         off += self.process_h3_capsule(&buf[off..read])?;
-                        debug!("Processed capsule -- off: {}, read: {}", off, read);
-                    }
 
-                    if self.local_addr.is_some() {
-                        let ifname = self.ifname.clone();
-                        self.setup_tun_dev(
-                            &conn,
-                            &socket,
-                            &ifname,
-                        ).await?;
-                    } else {
-                        warn!("Could not set a tunnel -- no known IP address");
+                        // TODO: add tunnel before capsule processing
+                        // Add addresses separately using "ip", so that IPv6 is also supported
+                        if self.local_addr.is_some() && self.tunwriter.is_none() {
+                            let ifname = self.ifname.clone();
+                            self.setup_tun_dev(
+                                &conn,
+                                &socket,
+                                &ifname,
+                            ).await?;
+                        } else {
+                            warn!("Could not set a tunnel -- no known IP address");
+                        }
                     }
                 }
                 Ok(())
@@ -531,10 +696,21 @@ impl Encoder<BytesMut> for IpPacketCodec {
 /// Server endpoint for IP tunnel over HTTP/3
 /// (see [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
 pub struct IpEndpoint {
+    /// IP address and prefix of the server side tunnel endpoint.
     ipnetwork: IpNetwork,
+
+    /// Interface ID prefix for this interface.
     ifprefix: String,
+
+    /// Number of point-to-point tunnels to this endpoint.
     tuncount: u32,
+
+    /// For keeping track of available addresses to assign.
     addrpool: AddressPool,
+
+    /// Buffer for route advertisement capsule sent to new clients to this endpoint.
+    /// May contain multiple IP address ranges for routes.
+    route_adv: Vec<u8>,
 }
 
 impl IpEndpoint {
@@ -553,7 +729,7 @@ impl IpEndpoint {
     pub fn new(
         local_addr: &str,
         ifprexix: &str,
-    ) -> Result<Box<dyn Endpoint>, PsqError> {
+    ) -> Result<IpEndpoint, PsqError> {
 
         // For the time being only IPv4 is supported.
         // The current version of tun crate only supports IPv4.
@@ -561,12 +737,60 @@ impl IpEndpoint {
         let mut addrpool = AddressPool::new(ip);
         addrpool.add(ip.ip())?;
 
-        Ok(Box::new(IpEndpoint {
+        Ok(IpEndpoint {
             ipnetwork: IpNetwork::V4(ip),
             ifprefix: ifprexix.to_string(),
             tuncount: 0,
             addrpool,
-        }))
+            route_adv: Vec::new(),  // leave space for type & length
+        })
+    }
+
+
+    /// Advertise route via the tunnel for IP addresses between `start_ip` and
+    /// `end_ip` to clients. This can be called for multiple different address
+    /// ranges for the same endpoint. Works only on Linux for the time being.
+    pub fn add_route(
+        &mut self,
+        start_ip: &IpAddr,
+        end_ip: &IpAddr,
+    ) -> Result<(), PsqError> {
+
+        let addrlen = match start_ip {
+            IpAddr::V4(_) => 4,
+            IpAddr::V6(_) => 16,
+        };
+
+        let start = self.route_adv.len();
+        self.route_adv.resize(start + (2 * addrlen + 2), 0);
+
+        let mut octets = octets::OctetsMut::with_slice(self.route_adv.as_mut_slice());
+        octets.skip(start)?;
+
+        // TODO: Check: start_ip MUST be less than equal than end_ip
+        match start_ip {
+            IpAddr::V4(v4_start) => {
+                if let IpAddr::V4(v4_end) = end_ip {
+                    octets.put_u8(4)?; // IP version = 4
+                    octets.put_bytes(&v4_start.octets())?;
+                    octets.put_bytes(&v4_end.octets())?;
+                    octets.put_u8(0)?;  // all protocols allowed
+                } else {
+                    return Err(PsqError::Custom("IP address families differ".to_string()));
+                }
+            },
+            IpAddr::V6(v6_start) => {
+                if let IpAddr::V4(v6_end) = end_ip {
+                    octets.put_u8(6)?; // IP version = 4
+                    octets.put_bytes(&v6_start.octets())?;
+                    octets.put_bytes(&v6_end.octets())?;
+                    octets.put_u8(0)?;  // all protocols allowed
+                } else {
+                    return Err(PsqError::Custom("IP address families differ".to_string()));
+                }
+            },
+        };
+        Ok(())
     }
 }
 
@@ -609,10 +833,17 @@ impl Endpoint for IpEndpoint {
             ))
         }
 
-        let mut body = Vec::<u8>::with_capacity(40);
-        unsafe { body.set_len(40); }
-        let off = iptunnel.add_address_assign_cap(&mut body)?;
-        body.truncate(off);
+        // TODO: This should be implemented with new Quiche zero-copy methods
+        let mut body = Vec::<u8>::with_capacity(256);
+        unsafe { body.set_len(256); }
+        let len_aacap = iptunnel.address_assign_capsule(&mut body)?;
+
+        let len_racap = iptunnel.route_advertisement_capsule(
+            &mut body, len_aacap, &self.route_adv)?;
+
+        body.truncate(len_aacap + len_racap);
+
+
 
         self.tuncount += 1;
         Ok((Some(iptunnel), body))
@@ -620,6 +851,7 @@ impl Endpoint for IpEndpoint {
 }
 
 
+/// For keeping track of available addresses.
 struct AddressPool {
     prefix: Ipv4Network,
     next: u32,
@@ -698,11 +930,11 @@ mod tests {
                 let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
                 psqserver.add_endpoint(
                     "ip",
-                    IpEndpoint::new(
+                    Box::new(IpEndpoint::new(
                         "10.76.0.1/24",
                         "tun-s",
                     ).unwrap()
-                ).await;
+                )).await;
                 loop {
                     psqserver.process().await.unwrap();
                 }

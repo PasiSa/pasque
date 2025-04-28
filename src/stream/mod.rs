@@ -20,7 +20,21 @@ use crate::{
 
 pub (crate) enum Capsule {
     AddressAssign = 0x01,
+    RouteAdvertisement = 0x03,
 }
+
+impl TryFrom<u64> for Capsule {
+    type Error = PsqError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            0x01 => Ok(Capsule::AddressAssign),
+            0x03 => Ok(Capsule::RouteAdvertisement),
+            _ => Err(PsqError::H3Capsule(format!("Unknown capsule type: {}", value))),
+        }
+    }
+}
+
 
 #[async_trait]
 /// Base trait for different tunnel/proxy stream types.

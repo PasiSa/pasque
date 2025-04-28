@@ -123,6 +123,9 @@ pub enum PsqError {
 
     #[error("Custom error: {0}")]
     Custom(String),
+
+    #[error("Unimplemented")]
+    Unimplemented,
 }
 
 
@@ -159,6 +162,7 @@ fn make_qlog_writer(
 
 
 pub mod client;
+pub mod platform;
 pub mod server;
 pub mod stream;
 

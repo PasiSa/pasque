@@ -43,7 +43,7 @@ and testing, if certificate validation is disabled at client.
 
 **Starting the example client:**
 
-    cargo run --bin psq-client -- -i -d https://localhost:4433
+    cargo run --bin psq-client -- -i -d https://localhost
 
 The example program will make a HTTP/3 CONNECT request to set up IP tunnel. For
 development and testing, if you are testing against a server with invalid

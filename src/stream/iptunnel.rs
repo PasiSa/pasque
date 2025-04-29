@@ -925,109 +925,105 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_ip_tunnel() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn test_ip_tunnel() {
         init_logger();
-        let rt = tokio::runtime::Runtime::new().unwrap();
         let addr = "127.0.0.1:8888";
-        rt.block_on(async {
-            let (tunnel, mut tester) = UnixStream::pair().unwrap();
+        let (tunnel, mut tester) = UnixStream::pair().unwrap();
 
-            let server = tokio::spawn(async move {
-                let config = Config::create_default();
-                let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
-                let mut ip_endpoint = IpEndpoint::new(
-                    "10.76.0.1/24",
-                    "tun-s",
-                ).unwrap();
-                ip_endpoint.add_route(
-                    &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-                    &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 255)),
-                ).unwrap();
-                ip_endpoint.add_teststream(tunnel);
-                psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
-                loop {
-                    psqserver.process().await.unwrap();
-                }
-    
-            });
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            // Run client
-            let client1 = tokio::spawn(async move {
-
-                let mut psqconn = PsqClient::connect(
-                    format!("https://{}/", addr).as_str(),
-                    true,
-                ).await.unwrap();
-
-                // Test first with GET which should not be supported on IP tunnel.
-                let ret = FileStream::get(
-                    &mut psqconn,
-                    "ip",
-                    "testout",
-                ).await;
-                assert!(matches!(ret, Err(PsqError::HttpResponse(405, _))));
-
-                // Start valid tunnel
-                add_client(&mut psqconn, "tun-c1", "10.76.0.2", None).await;
-
-                loop {
-                    psqconn.process().await.unwrap();
-                }
-            });
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            let client2 = tokio::spawn(async move {
-                let mut psqconn = PsqClient::connect(
-                    format!("https://{}/", addr).as_str(),
-                    true,
-                ).await.unwrap();
-                add_client(&mut psqconn, "tun-c2", "10.76.0.3", None).await;
-            });
-
-            // TODO: This old test does not work anymore. Leaving it as a reminder
-            // to figure out some way to test TUN interface
-            let result = timeout(Duration::from_millis(2000), async {
-                let socket = UdpSocket::bind("10.76.0.2:20000").await.unwrap();
-                socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
-                socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
-
-                let mut buf = vec![0u8; 2000];
-                let n = tester.read(&mut buf).await.unwrap();
-                debug!("packet output: {}", IpTunnel::packet_output(
-                    &buf[..n],
-                    n,
-                ));
-                if buf[9] != 128 {
-                    assert!(
-                        u16::from_be_bytes([buf[2], buf[3]]) == 33,
-                        "Invalid IP packet length"
-                    );
-                    assert!(buf[9] == 17, "Invalid protocol");
-                    assert!(
-                        u16::from_be_bytes([buf[22], buf[23]]) == 20001,
-                        "Invalid destination port"
-                    );
-                    assert!(
-                        buf[16] == 1 &&
-                        buf[17] == 1 &&
-                        buf[18] == 1 &&
-                        buf[19] == 100,
-                        "Invalid IP address",
-                    );
-                }
-            }).await;
-
-            assert!(result.is_ok(), "Test timed out");
-
-            client1.abort();
-            client2.abort();
-            server.abort();
+        let server = tokio::spawn(async move {
+            let config = Config::create_default();
+            let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
+            let mut ip_endpoint = IpEndpoint::new(
+                "10.76.0.1/24",
+                "tun-s",
+            ).unwrap();
+            ip_endpoint.add_route(
+                &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 255)),
+            ).unwrap();
+            ip_endpoint.add_teststream(tunnel);
+            psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
+            loop {
+                psqserver.process().await.unwrap();
+            }
 
         });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Run client
+        let client1 = tokio::spawn(async move {
+
+            let mut psqconn = PsqClient::connect(
+                format!("https://{}/", addr).as_str(),
+                true,
+            ).await.unwrap();
+
+            // Test first with GET which should not be supported on IP tunnel.
+            let ret = FileStream::get(
+                &mut psqconn,
+                "ip",
+                "testout",
+            ).await;
+            assert!(matches!(ret, Err(PsqError::HttpResponse(405, _))));
+
+            // Start valid tunnel
+            add_client(&mut psqconn, "tun-c1", "10.76.0.2", None).await;
+
+            loop {
+                psqconn.process().await.unwrap();
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let client2 = tokio::spawn(async move {
+            let mut psqconn = PsqClient::connect(
+                format!("https://{}/", addr).as_str(),
+                true,
+            ).await.unwrap();
+            add_client(&mut psqconn, "tun-c2", "10.76.0.3", None).await;
+        });
+
+        // TODO: This old test does not work anymore. Leaving it as a reminder
+        // to figure out some way to test TUN interface
+        let result = timeout(Duration::from_millis(2000), async {
+            let socket = UdpSocket::bind("10.76.0.2:20000").await.unwrap();
+            socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
+            socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
+
+            let mut buf = vec![0u8; 2000];
+            let n = tester.read(&mut buf).await.unwrap();
+            debug!("packet output: {}", IpTunnel::packet_output(
+                &buf[..n],
+                n,
+            ));
+            if buf[9] != 128 {
+                assert!(
+                    u16::from_be_bytes([buf[2], buf[3]]) == 33,
+                    "Invalid IP packet length"
+                );
+                assert!(buf[9] == 17, "Invalid protocol");
+                assert!(
+                    u16::from_be_bytes([buf[22], buf[23]]) == 20001,
+                    "Invalid destination port"
+                );
+                assert!(
+                    buf[16] == 1 &&
+                    buf[17] == 1 &&
+                    buf[18] == 1 &&
+                    buf[19] == 100,
+                    "Invalid IP address",
+                );
+            }
+        }).await;
+
+        assert!(result.is_ok(), "Test timed out");
+
+        client1.abort();
+        client2.abort();
+        server.abort();
     }
 
     async fn add_client(

@@ -112,7 +112,7 @@ impl PsqServer {
 
             Err(e) => {
                 error!("Parsing packet header failed: {:?}", e);
-                return Ok(())  // Just ignore, no panic
+                return Err(PsqError::Quiche(e))
             },
         };
 
@@ -131,7 +131,7 @@ impl PsqServer {
 
             if hdr.ty != quiche::Type::Initial {
                 error!("Packet is not Initial");
-                return Ok(())  // Just ignore, no panic
+                return Err(PsqError::Custom("Packet not initial".to_string()))
             }
 
             if !quiche::version_is_supported(hdr.version) {
@@ -189,12 +189,12 @@ impl PsqServer {
             // drop the packet.
             if odcid.is_none() {
                 error!("Invalid address validation token");
-                return Ok(())  // Just ignore, no panic
+                return Err(PsqError::Custom("Invalid address validation token".to_string()))
             }
 
             if scid.len() != hdr.dcid.len() {
                 error!("Invalid destination connection ID");
-                return Ok(())  // Just ignore, no panic
+                return Err(PsqError::Custom("Invalid destination connection ID".to_string()))
             }
 
             // Reuse the source connection ID we sent in the Retry packet,

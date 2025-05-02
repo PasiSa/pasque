@@ -1,10 +1,7 @@
 #[macro_use]
 extern crate log;
 
-use std::net::{
-    IpAddr,
-    Ipv4Addr,
-};
+use std::net::IpAddr;
 
 use clap::Parser;
 
@@ -45,14 +42,30 @@ async fn main() {
     // assigned IP addresses in the 10.76.0.0/24 network, as deliver in
     // ADDRESS_ASSIGN capsule in CONNECT response.
     if args.ip().len() > 0 {
-        let mut ip_endpoint = IpEndpoint::new(args.ip(), "tun-s").unwrap();
+        let mut ip_endpoint = IpEndpoint::new(
+            args.ip().as_str().parse().expect("Invalid IP"),
+            "tun-s"
+        ).unwrap();
         
         // This is just a temporary demonstrator of how add_route works.
         // It will be removed a bit later.
         ip_endpoint.add_route(
-            &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 255)),
+            &"10.76.0.1".parse::<IpAddr>().unwrap(),
+            &"10.76.0.255".parse::<IpAddr>().unwrap(),
         ).unwrap();
+
+        ip_endpoint.add_route(
+            &"1.1.1.1".parse::<IpAddr>().unwrap(),
+            &"1.1.1.255".parse::<IpAddr>().unwrap(),
+        ).unwrap();
+
+        ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
+
+        ip_endpoint.add_route(
+            &"fd76:0212:dead::1".parse::<IpAddr>().unwrap(),
+            &"fd76:0212:dead::ffff:ffff:ffff".parse::<IpAddr>().unwrap(),
+        ).unwrap();
+
         psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
     }
 

@@ -30,8 +30,8 @@ async fn main() {
             "ip",
             "tun-c",
         ).await {
-            Ok(iptunnel) => {
-                info!("IpTunnel set up with local address {}", iptunnel.local_addr().unwrap());
+            Ok(_iptunnel) => {
+                info!("IpTunnel set up");
             },
             Err(e) => {
                 error!("Error connecting IpTunnel: {}", e);

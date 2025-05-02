@@ -8,6 +8,8 @@ use crate::PsqError;
 
 pub trait OsNetworking {
     fn add_route(&self, destination: &str, ifname: &String) -> Result<(), PsqError>;
+
+    fn add_address(&self, addr: &str, ifname: &String) -> Result<(), PsqError>;
 }
 
 
@@ -24,6 +26,10 @@ pub struct NotImplementedNetworking;
 
 impl OsNetworking for NotImplementedNetworking {
     fn add_route(&self, _destination: &str, _ifname: &String) -> Result<(), PsqError> {
+        Err(PsqError::Unimplemented)
+    }
+
+    fn add_address(&self, _addr: &str, _ifname: &String) -> Result<(), PsqError> {
         Err(PsqError::Unimplemented)
     }
 }

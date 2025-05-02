@@ -259,23 +259,48 @@ impl IpTunnel {
 
 
     fn packet_output(buf: &[u8], bytes_read: usize) -> String {
-        if buf.len() < 32 {
-            return format!("Not an IP packet")
+        match buf[0] >> 4 {
+            4 => {
+                if buf.len() < 20 {
+                    return format!("Truncated IPv4 packet");
+                }
+                let mut output = format!(
+                    "IPv4: bytes: {}; Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
+                    bytes_read,
+                    u16::from_be_bytes([buf[2], buf[3]]),
+                    buf[16],buf[17],buf[18],buf[19],
+                    buf[9],
+                );
+                if buf.len() >= 28 && (buf[9] == 6 || buf[9] == 17) {
+                    output = output + &format!(
+                        "Dest port: {}",
+                        u16::from_be_bytes([buf[22], buf[23]])
+                    );
+                }
+                output
+            }
+            6 => {
+                if buf.len() < 40 {
+                    return format!("Truncated IPv6 packet");
+                }
+                let dst = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&buf[24..40]).unwrap());
+                let mut output = format!(
+                    "IPv6: bytes: {}; Payload Len: {}; Dest: {}; Next header: {}; ",
+                    bytes_read,
+                    u16::from_be_bytes([buf[4], buf[5]]),
+                    dst,
+                    buf[6],
+                );
+                if buf.len() >= 48 && (buf[6] == 6 || buf[6] == 17) {
+                    output = output + &format!(
+                        "Dest port: {}",
+                        u16::from_be_bytes([buf[42], buf[43]])
+                    );
+                }
+                output
+            }
+            _ => format!("Unknown IP version"),
         }
-        let mut output = format!(
-            "bytes: {}; Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
-            bytes_read,
-            u16::from_be_bytes([buf[2], buf[3]]),
-            buf[16],buf[17],buf[18],buf[19],
-            buf[9],
-        );
-        if buf[9] == 6 || buf[9] == 17 {
-            output = output + &format!(
-                "Dest port: {}",
-                u16::from_be_bytes([buf[22], buf[23]])
-            );
-        }
-        output
     }
 
 

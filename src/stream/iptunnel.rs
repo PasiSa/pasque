@@ -906,6 +906,13 @@ mod tests {
                 &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 255)),
             ).unwrap();
             ip_endpoint.add_teststream(tunnel);
+
+            ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
+            ip_endpoint.add_route(
+                &"fd76:0212:dead::1".parse::<IpAddr>().unwrap(),
+                &"fd76:0212:dead::ffff:ffff:ffff".parse::<IpAddr>().unwrap(),
+            ).unwrap();
+
             psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
             loop {
                 psqserver.process().await.unwrap();
@@ -949,12 +956,45 @@ mod tests {
             add_client(&mut psqconn, "tun-c2", "10.76.0.3", None).await;
         });
 
-        // TODO: This old test does not work anymore. Leaving it as a reminder
-        // to figure out some way to test TUN interface
-        let result = timeout(Duration::from_millis(2000), async {
+        // Try sending IPv4 datagrams through tunnel
+        let result = timeout(Duration::from_millis(500), async {
             let socket = UdpSocket::bind("10.76.0.2:20000").await.unwrap();
             socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
-            socket.send_to(b"Hello", "1.1.1.100:20001").await.unwrap();
+
+            let mut buf = vec![0u8; 2000];
+            loop {
+                let n = tester.read(&mut buf).await.unwrap();
+                debug!("packet output: {}", IpTunnel::packet_output(
+                    &buf[..n],
+                    n,
+                ));
+                if buf[9] != 128 {  // ignore non-IP packets
+                    assert!(
+                        u16::from_be_bytes([buf[2], buf[3]]) == 33,
+                        "Invalid IPv4 packet length"
+                    );
+                    assert!(buf[9] == 17, "IPv4: Invalid protocol");
+                    assert!(
+                        u16::from_be_bytes([buf[22], buf[23]]) == 20001,
+                        "IPv4: Invalid destination port"
+                    );
+                    assert!(
+                        buf[16] == 1 &&
+                        buf[17] == 1 &&
+                        buf[18] == 1 &&
+                        buf[19] == 100,
+                        "Invalid IPv4 address",
+                    );
+                    break;
+                }
+            }
+        }).await;
+        assert!(result.is_ok(), "Test timed out");
+
+        // Test sending IPv6 over tunnel
+        let result = timeout(Duration::from_millis(500), async {
+            let socket = UdpSocket::bind("[fd76:0212:dead::2]:20002").await.unwrap();
+            socket.send_to(b"Hello", "[fd76:0212:dead::100]:20003").await.unwrap();
 
             let mut buf = vec![0u8; 2000];
             let n = tester.read(&mut buf).await.unwrap();
@@ -962,26 +1002,19 @@ mod tests {
                 &buf[..n],
                 n,
             ));
-            if buf[9] != 128 {
-                assert!(
-                    u16::from_be_bytes([buf[2], buf[3]]) == 33,
-                    "Invalid IP packet length"
-                );
-                assert!(buf[9] == 17, "Invalid protocol");
-                assert!(
-                    u16::from_be_bytes([buf[22], buf[23]]) == 20001,
-                    "Invalid destination port"
-                );
-                assert!(
-                    buf[16] == 1 &&
-                    buf[17] == 1 &&
-                    buf[18] == 1 &&
-                    buf[19] == 100,
-                    "Invalid IP address",
-                );
-            }
+            assert!(
+                u16::from_be_bytes([buf[4], buf[5]]) == 13,
+                "Invalid IPv6 payload length"
+            );
+            assert!(buf[6] == 17, "IPv6: Invalid next header");
+            assert!(
+                buf[24] == 0xfd &&
+                buf[25] == 0x76 &&
+                buf[26] == 0x02 &&
+                buf[27] == 0x12,
+                "Invalid IPv6 address",
+            );
         }).await;
-
         assert!(result.is_ok(), "Test timed out");
 
         client1.abort();

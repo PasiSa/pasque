@@ -1,8 +1,6 @@
 #[macro_use]
 extern crate log;
 
-use std::net::IpAddr;
-
 use clap::Parser;
 
 use pasque::{
@@ -49,22 +47,12 @@ async fn main() {
         
         // This is just a temporary demonstrator of how add_route works.
         // It will be removed a bit later.
-        ip_endpoint.add_route(
-            &"10.76.0.1".parse::<IpAddr>().unwrap(),
-            &"10.76.0.255".parse::<IpAddr>().unwrap(),
-        ).unwrap();
+        ip_endpoint.add_route("10.76.0.0/24".parse().unwrap()).unwrap();
 
-        ip_endpoint.add_route(
-            &"1.1.1.1".parse::<IpAddr>().unwrap(),
-            &"1.1.1.255".parse::<IpAddr>().unwrap(),
-        ).unwrap();
+        ip_endpoint.add_route("1.1.1.0/24".parse().unwrap()).unwrap();
 
         ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
-
-        ip_endpoint.add_route(
-            &"fd76:0212:dead::1".parse::<IpAddr>().unwrap(),
-            &"fd76:0212:dead::ffff:ffff:ffff".parse::<IpAddr>().unwrap(),
-        ).unwrap();
+        ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
 
         psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
     }

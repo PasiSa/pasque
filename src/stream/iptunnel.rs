@@ -709,18 +709,17 @@ impl IpEndpoint {
     }
 
 
-    /// Advertise route via the tunnel for IP addresses between `start_ip` and
-    /// `end_ip` to clients. This can be called for multiple different address
+    /// Advertise route via the tunnel for IP addresses indicated by the
+    /// network prefix. This can be called for multiple different address
     /// ranges for the same endpoint. Works only on Linux for the time being.
     pub fn add_route(
         &mut self,
-        start_ip: &IpAddr,
-        end_ip: &IpAddr,
+        prefix: IpNetwork,
     ) -> Result<(), PsqError> {
 
-        let addrlen = match start_ip {
-            IpAddr::V4(_) => 4,
-            IpAddr::V6(_) => 16,
+        let addrlen = match prefix {
+            IpNetwork::V4(_) => 4,
+            IpNetwork::V6(_) => 16,
         };
 
         let start = self.route_adv.len();
@@ -729,28 +728,23 @@ impl IpEndpoint {
         let mut octets = octets::OctetsMut::with_slice(self.route_adv.as_mut_slice());
         octets.skip(start)?;
 
-        // TODO: Check: start_ip MUST be less than equal than end_ip
-        match start_ip {
-            IpAddr::V4(v4_start) => {
-                if let IpAddr::V4(v4_end) = end_ip {
-                    octets.put_u8(4)?; // IP version = 4
-                    octets.put_bytes(&v4_start.octets())?;
-                    octets.put_bytes(&v4_end.octets())?;
-                    octets.put_u8(0)?;  // all protocols allowed
-                } else {
-                    return Err(PsqError::Custom("IP address families differ".to_string()));
-                }
-            },
-            IpAddr::V6(v6_start) => {
-                if let IpAddr::V6(v6_end) = end_ip {
-                    octets.put_u8(6)?; // IP version = 4
-                    octets.put_bytes(&v6_start.octets())?;
-                    octets.put_bytes(&v6_end.octets())?;
-                    octets.put_u8(0)?;  // all protocols allowed
-                } else {
-                    return Err(PsqError::Custom("IP address families differ".to_string()));
-                }
-            },
+        match prefix {
+            IpNetwork::V4(prefix) => {
+                let start = prefix.nth(0).unwrap();
+                let end = prefix.nth(prefix.size()-1).unwrap();
+                octets.put_u8(4)?; // IP version = 4
+                octets.put_bytes(&start.octets())?;
+                octets.put_bytes(&end.octets())?;
+                octets.put_u8(0)?;  // all protocols allowed
+            }
+            IpNetwork::V6(prefix) => {
+                let start = prefix.nth(0).unwrap();
+                let end = prefix.nth(prefix.size()-1).unwrap();
+                octets.put_u8(6)?; // IP version = 6
+                octets.put_bytes(&start.octets())?;
+                octets.put_bytes(&end.octets())?;
+                octets.put_u8(0)?;  // all protocols allowed
+            }
         };
         Ok(())
     }
@@ -926,18 +920,11 @@ mod tests {
                 "10.76.0.1/24".parse().unwrap(),
                 "tun-s",
             ).unwrap();
-            ip_endpoint.add_route(
-                &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-                &IpAddr::V4(Ipv4Addr::new(1, 1, 1, 255)),
-            ).unwrap();
+            ip_endpoint.add_route("1.1.1.0/24".parse().unwrap()).unwrap();
             ip_endpoint.add_teststream(tunnel);
 
             ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
-            ip_endpoint.add_route(
-                &"fd76:0212:dead::1".parse::<IpAddr>().unwrap(),
-                &"fd76:0212:dead::ffff:ffff:ffff".parse::<IpAddr>().unwrap(),
-            ).unwrap();
-
+            ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
             psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
             loop {
                 psqserver.process().await.unwrap();

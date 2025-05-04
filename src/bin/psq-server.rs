@@ -4,8 +4,6 @@ extern crate log;
 use clap::Parser;
 
 use pasque::{
-    UdpEndpoint,
-    IpEndpoint,
     PsqServer,
     server::Config,
 };
@@ -34,40 +32,10 @@ async fn main() {
         &config,
     ).await.unwrap();
 
-    // Add "ip" endpoint that opens a IP tunnel for incoming CONNECT requests.
-    // For example, if you start server with option `--ip 10.76.0.1/24`, the
-    // server side of the tunnel has IP address 10.76.0.1, and clients are
-    // assigned IP addresses in the 10.76.0.0/24 network, as deliver in
-    // ADDRESS_ASSIGN capsule in CONNECT response.
-    if args.ip().len() > 0 {
-        let mut ip_endpoint = IpEndpoint::new(
-            "tun-s"
-        );
-        ip_endpoint.add_addresspool(
-            args.ip()
-                .as_str()
-                .parse()
-                .expect("Invalid IP")
-        ).unwrap();
-        
-        // This is just a temporary demonstrator of how add_route works.
-        // It will be removed a bit later.
-        ip_endpoint.add_route("10.76.0.0/24".parse().unwrap()).unwrap();
-
-        ip_endpoint.add_route("1.1.1.0/24".parse().unwrap()).unwrap();
-
-        ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
-        ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
-
-        psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
-    }
-
-    // Add "udp" endpoint for proxying UDP sessions.
-    psqserver.add_endpoint("udp", UdpEndpoint::new()).await;
-
-    // Loop forever to process incoming QUIC traffic.
     loop {
-        psqserver.process().await.unwrap();
+        if let Err(e) = psqserver.process().await {
+            error!("PsqServer error: {}", e);
+        }
     }
 }
 
@@ -82,10 +50,6 @@ pub struct Args {
     /// Configuration file to read.
     #[arg(short, long, default_value = "src/bin/server-example.json")]
     config: String,
-
-    /// IP prefix of IP tunnel endpoint. If not given, IP tunnel is not started.
-    #[arg(short, long, default_value = "")]
-    ip: String,
 }
 
 
@@ -102,9 +66,5 @@ impl Args {
 
     pub fn config(&self) -> &String {
         &self.config
-    }
-
-    pub fn ip(&self) -> &String {
-        &self.ip
     }
 }

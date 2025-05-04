@@ -26,13 +26,12 @@ that the latter requires sudo privileges, and is so far tested only on Linux.
 
 **Starting the example server:**
 
-    cargo run --bin psq-server -- -i 10.76.0.1/24
+    cargo run --bin psq-server
 
 The example server listens to UDP port 443 for incoming HTTP/3 and QUIC
-connections (use `-a` option to change the address and port to bind).
-`-i` option enables the IP tunnel at given IP address. Clients are
-allocated IP addresses from the given IP network, hence also the prefix length
-is given.
+connections (use `-a` option to change the address and port to bind). Clients
+are allocated IP addresses from the given IP network, hence also the prefix
+length is given.
 
 The server needs a JSON configuration file that gives links to files containing
 TLS certificate and private key are given in a JSON configuration file. The
@@ -45,9 +44,10 @@ and testing, if certificate validation is disabled at client.
 
     cargo run --bin psq-client -- -i -d https://localhost
 
-The example program will make a HTTP/3 CONNECT request to set up IP tunnel. For
-development and testing, if you are testing against a server with invalid
-certificate, use option `--ignore-cert` to disable certificate check.
+The example program will make a HTTP/3 CONNECT request to set up IP tunne, in
+addition to UDP tunnel. For development and testing, if you are testing against
+a server with invalid certificate, use option `--ignore-cert` to disable
+certificate check.
 
 ## Further information
 

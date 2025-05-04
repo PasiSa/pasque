@@ -19,8 +19,8 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let config = Config::read_from_file("server.json").unwrap();
-//!     let mut psqserver = PsqServer::start("0.0.0.0:4433", &config).await.unwrap();
-//!     psqserver.add_endpoint("udp", UdpEndpoint::new().unwrap()).await;
+//!     let mut psqserver = PsqServer::start("0.0.0.0:443", &config).await.unwrap();
+//!     psqserver.add_endpoint("udp", UdpEndpoint::new()).await;
 //! }
 //! ```
 //! 
@@ -43,7 +43,7 @@
 //! use pasque::{PsqClient, UdpTunnel};
 //! #[tokio::main]
 //! async fn main() {
-//!     let mut psqconn = PsqClient::connect("https://localhost:4433/", false).await.unwrap();
+//!     let mut psqconn = PsqClient::connect("https://localhost", false).await.unwrap();
 //!     let udptunnel = UdpTunnel::connect(
 //!         &mut psqconn,
 //!         "udp",
@@ -76,6 +76,7 @@ pub use crate::{
     stream::{
         iptunnel::{ IpTunnel, IpEndpoint },
         udptunnel::{ UdpTunnel, UdpEndpoint },
+        filestream::{ FileStream, Files },
     },
 };
 

@@ -657,8 +657,30 @@ impl Encoder<BytesMut> for IpPacketCodec {
 }
 
 
-/// Server endpoint for IP tunnel over HTTP/3
-/// (see [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
+/// Server endpoint for IP tunnel over HTTP/3 (see [RFC
+/// 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
+/// 
+/// IP endpoint can be given one or more address pools from which it assigns
+/// IPv4 or IPv6 addresses to the connecting clients. It can also be assigned
+/// routes that are advertised to clients.
+/// 
+/// Here is an example of IP endpoint with address pool and routes:
+/// 
+/// ```no_run
+/// use pasque::{server::Config, PsqServer, IpEndpoint};
+/// #[tokio::main]
+/// async fn main() {
+///     let config = Config::read_from_file("server.json").unwrap();
+///     let mut psqserver = PsqServer::start("0.0.0.0:443", &config).await.unwrap();
+///
+///     let mut ip_endpoint = IpEndpoint::new("tun-s");
+///     ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
+///     ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
+///     ip_endpoint.add_route("::/0".parse().unwrap()).unwrap();
+/// 
+///     psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
+/// }
+/// ```
 pub struct IpEndpoint {
     /// Interface ID prefix for this interface.
     ifprefix: String,
@@ -693,19 +715,16 @@ impl IpEndpoint {
     /// `tun-s0`, then the individual interfaces are `tun-s0-i0`, `tun-s0-i1`,
     /// and so on.
     pub fn new(
-        local_addr: IpNetwork,
         ifprexix: &str,
-    ) -> Result<IpEndpoint, PsqError> {
+    ) -> IpEndpoint {
 
-        let mut ipend = IpEndpoint {
+        IpEndpoint {
             ifprefix: ifprexix.to_string(),
             tuncount: 0,
             addrpools: Vec::new(),
             route_adv: Vec::new(),
             teststream: None,
-        };
-        ipend.add_addresspool(local_addr)?;
-        Ok(ipend)
+        }
     }
 
 
@@ -917,9 +936,9 @@ mod tests {
             let config = Config::create_default();
             let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
             let mut ip_endpoint = IpEndpoint::new(
-                "10.76.0.1/24".parse().unwrap(),
                 "tun-s",
-            ).unwrap();
+            );
+            ip_endpoint.add_addresspool("10.76.0.1/24".parse().unwrap()).unwrap();
             ip_endpoint.add_route("1.1.1.0/24".parse().unwrap()).unwrap();
             ip_endpoint.add_teststream(tunnel);
 

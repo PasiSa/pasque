@@ -79,13 +79,17 @@ impl PsqServer {
         let conn_id_seed =
             ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
-        Ok( PsqServer {
+        let mut server = PsqServer {
             socket: Arc::new(socket),
             qconfig,
             conn_id_seed,
             clients: ClientMap::new(),
             endpoints: Arc::new(Mutex::new(HashMap::new())),
-        })
+        };
+        
+        config.set_server_endpoints(&mut server).await?;
+
+        Ok(server)
     }
 
 

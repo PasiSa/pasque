@@ -1,4 +1,22 @@
 {
     "cert_file": "src/bin/cert.crt",
-    "key_file": "src/bin/cert.key"
+    "key_file": "src/bin/cert.key",
+    "endpoints": [
+        {
+            "path": "ip",
+            "type": "IpEndpoint",
+            "ifprefix": "tun-s0",
+            "addresspools": [ "10.76.0.1/24", "fd76:0212:dead::1/48" ],
+            "routes": ["10.76.0.0/24", "fd76:0212:dead::/48" ]
+        },
+        {
+            "path": "udp",
+            "type": "UdpEndpoint"
+        },
+        {
+            "path": "files",
+            "type": "Files",
+            "root": "."
+        }
+    ]
 }

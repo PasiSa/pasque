@@ -41,8 +41,13 @@ async fn main() {
     // ADDRESS_ASSIGN capsule in CONNECT response.
     if args.ip().len() > 0 {
         let mut ip_endpoint = IpEndpoint::new(
-            args.ip().as_str().parse().expect("Invalid IP"),
             "tun-s"
+        );
+        ip_endpoint.add_addresspool(
+            args.ip()
+                .as_str()
+                .parse()
+                .expect("Invalid IP")
         ).unwrap();
         
         // This is just a temporary demonstrator of how add_route works.
@@ -58,9 +63,7 @@ async fn main() {
     }
 
     // Add "udp" endpoint for proxying UDP sessions.
-    psqserver.add_endpoint("udp",
-        UdpEndpoint::new().unwrap()
-    ).await;
+    psqserver.add_endpoint("udp", UdpEndpoint::new()).await;
 
     // Loop forever to process incoming QUIC traffic.
     loop {

@@ -312,10 +312,9 @@ impl UdpEndpoint {
     /// 
     /// `https://someaddress.org/udp/192.0.2.6/443/`
     pub fn new(
-    ) -> Result<Box<dyn Endpoint>, PsqError> {
+    ) -> Box<dyn Endpoint> {
 
-        Ok(Box::new(UdpEndpoint {
-        }))
+        Box::new(UdpEndpoint {} )
     }
 }
 

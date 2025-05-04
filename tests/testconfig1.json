@@ -1,4 +1,5 @@
 {
     "cert_file": "src/bin/cert.crt",
-    "key_file": "src/bin/cert.keys"
+    "key_file": "src/bin/cert.keys",
+    "endpoints": [ ]
 }

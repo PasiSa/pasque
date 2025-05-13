@@ -44,10 +44,47 @@ and testing, if certificate validation is disabled at client.
 
     cargo run --bin psq-client -- -i -d https://localhost
 
-The example program will make a HTTP/3 CONNECT request to set up IP tunne, in
+The example program will make a HTTP/3 CONNECT request to set up IP tunnel, in
 addition to UDP tunnel. For development and testing, if you are testing against
 a server with invalid certificate, use option `--ignore-cert` to disable
 certificate check.
+
+## Server configuration
+
+An example server configuration file is provided in
+**[server-example.json](src/bin/server-example.json)**. It demonstrates
+configurations for an IP tunnel endpoint (type: `IpEndpoint`), UDP proxy
+endpoint (type: `UdpEndpoint`) and an endpoint serving
+static files (type: `Files`).
+
+
+### IP Tunnel (IpEndpoint)
+
+The following fields are used to configure an IP tunnel:
+
+* **ifprefix**: Prefix for the names of TUN interfaces created for clients. Each
+  client is assigned a unique interface with this prefix (e.g., ifprefix-iN,
+  where N is an integer).
+
+* **addresspools**: A list of network prefixes used to assign addresses to
+  clients. Each new client receives one address from each specified prefix. This
+  allows support for both IPv4 and IPv6 addresses.
+
+* **routes**: Network prefixes advertised to the client as available routes.
+
+### UDP Proxy (UdpEndpoint)
+
+The UDP proxy currently has no configuration fields. All parameters are provided
+as URI variables in the HTTP request, as defined in **[RFC 9298]**.
+
+### Static File Sharing (Files)
+
+The `Files` endpoint has a single field:
+
+* **root**: Path to the directory on the server’s file system from which static
+  files are served.
+
+[RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
 ## Further information
 

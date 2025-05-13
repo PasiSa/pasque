@@ -1,5 +1,8 @@
 use std::{
-    any::Any, io::Write, sync::Arc
+    any::Any,
+    fmt,
+    io::Write,
+    sync::Arc,
 };
 
 use async_trait::async_trait;
@@ -262,5 +265,15 @@ impl Endpoint for Files {
         };
     
         Ok((None, body))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl fmt::Debug for Files {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Files({})", self.root)
     }
 }

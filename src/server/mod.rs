@@ -1,5 +1,7 @@
 use std::{
+    any::Any,
     collections::HashMap,
+    fmt::Debug,
     net::SocketAddr,
     sync::Arc,
 };
@@ -390,15 +392,15 @@ fn build_h3_response(
 
 #[async_trait]
 /// Base trait for different Endpoint types at the server.
-pub trait Endpoint: Send + Sync {
+pub trait Endpoint: Send + Sync + Debug + Any {
 
     /// Process incoming HTTP/3 request.
     /// 
-    /// If succesful, returns a [`PsqStream`]-derived object for handling
+    /// If successful, returns a [`PsqStream`]-derived object for handling
     /// the follow-up processing of the stream (and related datagrams),
     /// and body that can include, for example, capsules for additional
     /// tunnel attributes.
-    /// Commonly, on unsuccesful cases it returns [`PsqError::HttpResponse`]
+    /// Commonly, on unsuccessful cases it returns [`PsqError::HttpResponse`]
     /// with status code and message, that will be propagated to client.
     async fn process_request(
         &mut self,
@@ -408,7 +410,41 @@ pub trait Endpoint: Send + Sync {
         stream_id: u64,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>),
                 PsqError>;
+
+    fn as_any(&self) -> &dyn Any;
 }
 
 pub mod clientsession;
 pub mod config;
+
+#[cfg(test)]
+mod tests {
+    use crate::{Files, IpEndpoint, UdpEndpoint};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn read_endpoint_config() {
+        let config = Config::read_from_file("tests/endpoints.json").unwrap();
+        let psqserver = PsqServer::start(
+            &"0.0.0.0:4433",
+            &config,
+        ).await.unwrap();
+        let endpoints = psqserver.endpoints.lock().await;
+
+        let ip = endpoints.get("ip").unwrap()
+            .as_any()
+            .downcast_ref::<IpEndpoint>().unwrap();
+        assert!(format!("{:?}", ip) == "IpEndpoint(tun-s0 10.76.0.1/24 fd76:212:dead::1/48)");
+
+        let udp = endpoints.get("udp").unwrap()
+            .as_any()
+            .downcast_ref::<UdpEndpoint>().unwrap();
+        assert!(format!("{:?}", udp) == "UdpEndpoint()");
+
+        let files = endpoints.get("files").unwrap()
+            .as_any()
+            .downcast_ref::<Files>().unwrap();
+        assert!(format!("{:?}", files) == "Files(.)");
+    }
+}

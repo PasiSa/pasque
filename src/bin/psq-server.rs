@@ -26,7 +26,6 @@ async fn main() {
         }
     };
 
-    // Start server, bind to IPv4 any address, listen to UDP port 4433.
     let mut psqserver = PsqServer::start(
         &args.address(),
         &config,

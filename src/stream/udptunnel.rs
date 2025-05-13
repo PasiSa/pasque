@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    fmt,
+    net::SocketAddr,
+};
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -381,5 +384,15 @@ impl Endpoint for UdpEndpoint {
 
         let body = Vec::<u8>::new();
         Ok((Some(udptunnel), body))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl fmt::Debug for UdpEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UdpEndpoint()")
     }
 }

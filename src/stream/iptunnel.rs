@@ -1,6 +1,7 @@
 use std::{
     any::Any,
     collections::HashSet,
+    fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
@@ -842,6 +843,20 @@ impl Endpoint for IpEndpoint {
 
         self.tuncount += 1;
         Ok((Some(iptunnel), body))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl fmt::Debug for IpEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "IpEndpoint({}", self.ifprefix)?;
+        for pool in &self.addrpools {
+            write!(f, " {}", pool.prefix)?;
+        }
+        write!(f, ")")
     }
 }
 

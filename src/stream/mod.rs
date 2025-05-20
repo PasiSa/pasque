@@ -49,6 +49,12 @@ pub trait PsqStream: Any + Send + Sync {
 
     fn as_any(&self) -> &dyn Any;
 
+    /// Process HTTP/3 response at the client.
+    /// 
+    /// Will be called repeatedly to process the different types of HTTP/3
+    /// events: `Headers` for processing response headers, `Data` for processing
+    /// the payload from buffer `buf`, and so on (see `Event` documentation for
+    /// different types of events).
     async fn process_h3_response(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,

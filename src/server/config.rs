@@ -10,7 +10,12 @@ use crate::{Files, IpEndpoint, PsqError, UdpEndpoint};
 use super::PsqServer;
 
 
-/// Configuration read from JSON config file.
+/// Configuration for server certificate and endpoint settings.
+/// 
+/// See [server-example.json] for an example on how different types of endpoints
+/// are configured and what fields they have.
+/// 
+/// [server-example.json]: https://github.com/PasiSa/pasque/blob/main/src/bin/server-example.json
 #[derive(Debug, Deserialize)]
 pub struct Config {
     cert_file: String,
@@ -66,7 +71,7 @@ impl Config {
         }
     }
 
-    /// File for TLS certificate.
+    /// File path that contains the PEM formatted TLS certificate.
     pub fn cert_file(&self) -> &String {
         &self.cert_file
     }

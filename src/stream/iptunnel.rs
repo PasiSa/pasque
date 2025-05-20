@@ -539,7 +539,6 @@ impl PsqStream for IpTunnel {
     }
 
 
-    /// Called at the client when response from HTTP/3 server arrives.
     async fn process_h3_response(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,

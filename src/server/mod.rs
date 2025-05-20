@@ -43,7 +43,10 @@ pub struct PsqServer {
 
 impl PsqServer {
 
-    /// Configure and start the server at given address and port.
+    /// Configure and start the server listening at given address and port.
+    /// 
+    /// Sets up the certificate and endpoints as defined in `config`. See
+    /// documentation of the [Config] for details.
     pub async fn start(address: &str, config: &Config) -> Result<PsqServer, PsqError> {
         info!("Pasque server version {} starting", VERSION_IDENTIFICATION);
         let socket =

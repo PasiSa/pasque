@@ -1,3 +1,5 @@
+//! The client side operation of a HTTP/3 session
+
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -31,6 +33,17 @@ pub struct PsqClient {
 }
 
 impl PsqClient {
+
+    /// Open QUIC and HTTP/3 connection to given server.
+    /// 
+    /// The server base URL address is indicated in `urlstr`. The path component
+    /// of the URL is appended when different streams are opened with separate
+    /// call (see for example [crate::IpTunnel::connect] or
+    /// [crate::UdpTunnel::connect]).
+    /// 
+    /// If `ignore_cert` is set, ignore the certificate check from server. This
+    /// should only be enabled in development situations against a temporary
+    /// server without proper certificate. 
     pub async fn connect(
         urlstr: &str,
         ignore_cert: bool,

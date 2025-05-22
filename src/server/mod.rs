@@ -1,3 +1,5 @@
+//! The server side operations for incoming HTTP/3 connections
+
 use std::{
     any::Any,
     collections::HashMap,

@@ -1,3 +1,9 @@
+//! The client and server side logic for different types of tunnel endpoints
+//! 
+//! In addition to MASQUE tunnels based on CONNECT, there is a simple endpoint
+//! for sharing files. Designed to be generic based on [PsqStream] trait that
+//! represents one kind of tunnel between client and server.
+
 use std::{
     any::Any,
     sync::Arc,

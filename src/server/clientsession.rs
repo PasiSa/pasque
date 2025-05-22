@@ -1,3 +1,5 @@
+//! One server-side session to a client
+
 use std::{
     collections::HashMap,
     sync::Arc,

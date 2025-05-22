@@ -1,3 +1,8 @@
+//! Platform specific network operations
+//! 
+//! Implements operations for configuring routes and addresses for tunnel. So
+//! far only Linux is supported.
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 #[cfg(target_os = "linux")]

@@ -1,3 +1,8 @@
+//! Server side configuration settings
+//! 
+//! Typically read from a JSON file. Includes certificate parameters and
+//! configurations for different kinds of endpoints.
+
 use std::{
     fs::File,
     io::BufReader,

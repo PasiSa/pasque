@@ -122,6 +122,9 @@ pub enum PsqError {
     #[error("UTF8 parsing error: {0}")]
     Utf8(#[from] std::str::Utf8Error),
 
+    #[error("JSON Web Token error: {0}")]
+    Jwt(#[from] jsonwebtoken::errors::Error),
+
     #[error("Custom error: {0}")]
     Custom(String),
 
@@ -163,6 +166,7 @@ fn make_qlog_writer(
 
 
 pub mod client;
+pub mod jwt;
 pub mod platform;
 pub mod server;
 pub mod stream;

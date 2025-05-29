@@ -30,6 +30,9 @@ pub struct PsqClient {
     url: url::Url,
     streams: HashMap<u64, Box<dyn PsqStream>>,
     timeout_tx: watch::Sender<Option<Duration>>,
+
+    /// JWT token the server may require to authorize different requests.
+    token: Option<String>,
 }
 
 impl PsqClient {
@@ -122,6 +125,7 @@ impl PsqClient {
             url,
             streams: HashMap::new(),
             timeout_tx: tx,
+            token: None,
         };
         timeout_watcher(
             Arc::clone(&this.conn),
@@ -224,6 +228,17 @@ impl PsqClient {
 
     pub fn get_url(&self) -> &url::Url {
         &self.url
+    }
+
+
+    /// Set JWT token the server may require to authorize different requests.
+    pub fn set_token(&mut self, token: String) {
+        self.token = Some(token);
+    }
+
+    /// JWT token the server may require to authorize different requests.
+    pub fn token(&self) -> &Option<String> {
+        &self.token
     }
 
 

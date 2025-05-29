@@ -44,7 +44,12 @@ impl FileStream {
     ) -> Result<usize, PsqError>{
 
         let url = pconn.get_url().join(urlstr)?;
-        let req = prepare_h3_request("GET", "", &url);
+        let req = prepare_h3_request(
+            "GET",
+            "",
+            &url,
+            pconn.token(),
+        );
         info!("sending HTTP request {:?}", req);
 
         let stream_id: u64;

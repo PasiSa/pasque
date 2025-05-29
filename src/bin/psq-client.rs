@@ -23,6 +23,10 @@ async fn main() {
         args.ignore_cert(),
     ).await.unwrap();
 
+    if let Some(token) = args.token() {
+        psqconn.set_token(token.clone());
+    }
+
     // Triggers a CONNECT request to "ip" endpoint at the server.
     // The call blocks until server has replied and tunnel is established.
     if args.ip() {
@@ -82,6 +86,10 @@ pub struct Args {
     /// If set, request an IP tunnel from server
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     ip: bool,
+
+    /// Optional JWT token to authenticate the client
+    #[arg(long)]
+    token: Option<String>,
 }
 
 
@@ -106,5 +114,9 @@ impl Args {
 
     pub fn ip(&self) -> bool {
         self.ip
+    }
+
+    pub fn token(&self) -> Option<&String> {
+        self.token.as_ref()
     }
 }

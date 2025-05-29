@@ -83,6 +83,7 @@ fn prepare_h3_request(
     method: &str,
     protocol: &str,
     url: &url::Url,
+    token: &Option<String>,
 ) -> Vec<quiche::h3::Header> {
 
     let mut path = String::from(url.path());
@@ -105,6 +106,12 @@ fn prepare_h3_request(
     ];
     if !protocol.is_empty() {
         headers.push(quiche::h3::Header::new(b":protocol", protocol.as_bytes()));
+    }
+    if let Some(token) = token {
+        headers.push(quiche::h3::Header::new(
+            b"authorization",
+            format!("Bearer {}", token).as_bytes(),
+        ));
     }
 
     headers
@@ -193,6 +200,7 @@ async fn start_connection<'a>(
         "CONNECT",
         protocol,
         &url,
+        pconn.token(),
     );
     info!("sending HTTP request {:?}", req);
 

@@ -33,6 +33,7 @@ pub (crate) struct ClientSession {
     timeout_tx: watch::Sender<Option<Duration>>,
     streams: HashMap<u64, Box<dyn PsqStream>>,
     endpoints: Arc<Mutex<Endpoints>>,
+    jwt_secret: Vec<u8>,
 }
 
 impl ClientSession {
@@ -41,6 +42,7 @@ impl ClientSession {
         conn: quiche::Connection,
         timeout_tx: watch::Sender<Option<Duration>>,
         endpoints: &Arc<Mutex<Endpoints>>,
+        jwt_secret: &Vec<u8>,
     ) -> ClientSession {
         ClientSession {
             socket: Arc::clone(socket),
@@ -50,6 +52,7 @@ impl ClientSession {
             timeout_tx: timeout_tx,
             streams: HashMap::new(),
             endpoints: Arc::clone(endpoints),
+            jwt_secret: jwt_secret.to_vec(),
         }
     }
 
@@ -349,7 +352,8 @@ impl ClientSession {
                         request,
                         &self.conn,
                         &self.socket,
-                        stream_id
+                        stream_id,
+                        &self.jwt_secret,
                 ).await {
                     Ok((stream, body)) => {
                         if stream.is_some() {

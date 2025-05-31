@@ -12,6 +12,7 @@ use tokio::{
     sync::Mutex,
 };
 
+use super::*;
 use crate::{
     client::PsqClient,
     PsqError,
@@ -208,14 +209,33 @@ impl PsqStream for FileStream {
 
 /// Endpoint for serving files based on incoming GET requests.
 pub struct Files {
+    /// Root path from which files are shared.
     root: String,
+
+    /// Permission label required to be present in incoming JWT token.
+    permission: Option<String>,
 }
 
 impl Files {
 
     /// Create new endpoint, serving files from directory pointed by `root`.
-    pub fn new(root: &str) -> Box<dyn Endpoint> {
-        Box::new(Files { root: root.to_string() })
+    pub fn new(root: &str) -> Files {
+        Files {
+            root: root.to_string(),
+            permission: None,
+        }
+}
+
+    /// Require permission label required in incoming JWT token.
+    /// 
+    /// If incoming request does not have JWT token, or the token does not
+    /// include this permission label in its claims, the request is rejected as
+    /// unauthorized.
+    pub fn require_permission(
+        &mut self,
+        permission: &String,
+    ) {
+        self.permission = Some(permission.to_string());
     }
 }
 
@@ -227,13 +247,18 @@ impl Endpoint for Files {
         _conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
         _stream_id: u64,
+        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
         debug!("FileStream triggered");
         let mut file_path = std::path::PathBuf::from(&self.root);
         let mut path = std::path::Path::new("");
     
+        let mut authorized = self.permission.is_none();
         for hdr in request {
+            authorized = authorized ||
+                check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+
             match hdr.name() {
                 b":method" => {
                     if hdr.value() != b"GET" {
@@ -251,6 +276,11 @@ impl Endpoint for Files {
                 },
                 _ => {},
             }
+        }
+        if !authorized {
+            return Err(
+                PsqError::HttpResponse(401, "Authorization required".to_string())
+            )
         }
 
         let mut count = 0;  // hacky thing to ignore the first component of path

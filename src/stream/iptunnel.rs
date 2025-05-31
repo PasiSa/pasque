@@ -697,6 +697,9 @@ pub struct IpEndpoint {
     /// May contain multiple IP address ranges for routes.
     route_adv: Vec<u8>,
 
+    /// Permission label required to be present in incoming JWT token.
+    permission: Option<String>,
+
     /// For testing support: tunneled packets are optionally written here.
     teststream: Option<tokio::net::UnixStream>,
 }
@@ -723,6 +726,7 @@ impl IpEndpoint {
             tuncount: 0,
             addrpools: Vec::new(),
             route_adv: Vec::new(),
+            permission: None,
             teststream: None,
         }
     }
@@ -777,6 +781,17 @@ impl IpEndpoint {
         Ok(())
     }
 
+    /// Require permission label required in incoming JWT token.
+    /// If incoming request does not have JWT token, or the token does not
+    /// include this permission label in its claims, the request is rejected as
+    /// unauthorized.
+    pub fn require_permission(
+        &mut self,
+        permission: &String,
+    ) {
+        self.permission = Some(permission.to_string());
+    }
+
 
     #[cfg(all(test, feature = "tuntest"))]
     fn add_teststream(&mut self, stream: tokio::net::UnixStream) {
@@ -792,10 +807,20 @@ impl Endpoint for IpEndpoint {
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
+        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
+        let mut authorized = self.permission.is_none();
         for hdr in request {
             check_common_headers(hdr, "connect-ip")?;
+            authorized = authorized ||
+                check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+        }
+
+        if !authorized {
+            return Err(
+                PsqError::HttpResponse(401, "Authorization required".to_string())
+            )
         }
 
         debug!("Starting IP tunnel");

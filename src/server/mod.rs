@@ -41,6 +41,7 @@ pub struct PsqServer {
     conn_id_seed: ring::hmac::Key,
     clients: ClientMap,
     endpoints: Arc<Mutex<Endpoints>>,
+    jwt_secret: Vec<u8>,
 }
 
 impl PsqServer {
@@ -92,6 +93,7 @@ impl PsqServer {
             conn_id_seed,
             clients: ClientMap::new(),
             endpoints: Arc::new(Mutex::new(HashMap::new())),
+            jwt_secret: config.jwt_secret().as_bytes().to_vec(),
         };
         
         config.set_server_endpoints(&mut server).await?;
@@ -230,6 +232,7 @@ impl PsqServer {
                 conn,
                 tx,
                 &self.endpoints,
+                &self.jwt_secret,
             );
 
             timeout_watcher(
@@ -413,6 +416,7 @@ pub trait Endpoint: Send + Sync + Debug + Any {
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         stream_id: u64,
+        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>),
                 PsqError>;
 

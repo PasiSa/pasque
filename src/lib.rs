@@ -20,7 +20,7 @@
 //! async fn main() {
 //!     let config = Config::read_from_file("server.json").unwrap();
 //!     let mut psqserver = PsqServer::start("0.0.0.0:443", &config).await.unwrap();
-//!     psqserver.add_endpoint("udp", UdpEndpoint::new()).await;
+//!     psqserver.add_endpoint("udp", Box::new(UdpEndpoint::new())).await;
 //! }
 //! ```
 //! 

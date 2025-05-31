@@ -303,6 +303,8 @@ impl PsqStream for UdpTunnel {
 /// Server endpoint for UDP tunnel over HTTP/3
 /// (see [RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298)).
 pub struct UdpEndpoint {
+    /// Permission label required to be present in incoming JWT token.
+    permission: Option<String>,
 }
 
 impl UdpEndpoint {
@@ -315,9 +317,23 @@ impl UdpEndpoint {
     /// 
     /// `https://someaddress.org/udp/192.0.2.6/443/`
     pub fn new(
-    ) -> Box<dyn Endpoint> {
+    ) -> UdpEndpoint {
 
-        Box::new(UdpEndpoint {} )
+        UdpEndpoint {
+            permission: None,
+        }
+    }
+
+    /// Require permission label required in incoming JWT token.
+    /// 
+    /// If incoming request does not have JWT token, or the token does not
+    /// include this permission label in its claims, the request is rejected as
+    /// unauthorized.
+    pub fn require_permission(
+        &mut self,
+        permission: &String,
+    ) {
+        self.permission = Some(permission.to_string());
     }
 }
 
@@ -329,13 +345,18 @@ impl Endpoint for UdpEndpoint {
         qconn: &Arc<Mutex<quiche::Connection>>,
         qsocket: &Arc<UdpSocket>,
         stream_id: u64,
+        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
 
         let mut desthost = "";
         let mut destport: u16 = 0;
 
+        let mut authorized = self.permission.is_none();
         for hdr in request {
             check_common_headers(hdr, "connect-udp")?;
+            authorized = authorized ||
+                check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+
             if hdr.name() == b":path" {
                 let path = std::path::Path::new(
                     // UTF8 validity was already checked earlier
@@ -361,6 +382,13 @@ impl Endpoint for UdpEndpoint {
 
             }
         }
+
+        if !authorized {
+            return Err(
+                PsqError::HttpResponse(401, "Authorization required".to_string())
+            )
+        }
+
         if destport == 0 {
             return Err(PsqError::Custom(
                 "Could not parse destination address for the UDP tunnel".into()

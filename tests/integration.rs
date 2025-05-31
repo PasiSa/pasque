@@ -34,7 +34,7 @@ async fn test_get_request() {
         ).await.unwrap();
         psqserver.add_endpoint(
             "files", 
-            Files::new(".")).await;
+            Box::new(Files::new("."))).await;
         loop {
             psqserver.process().await.unwrap();
         }
@@ -87,7 +87,7 @@ async fn run_server(addr: &str, shutdown: Arc<Notify>) {
     let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
     psqserver.add_endpoint(
         "udp",
-        UdpEndpoint::new(),
+        Box::new(UdpEndpoint::new()),
     ).await;
     loop {
         tokio::select! {
@@ -205,7 +205,7 @@ async fn tunnel_closing() {
         let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
         psqserver.add_endpoint(
             "udp",
-            UdpEndpoint::new(),
+            Box::new(UdpEndpoint::new()),
         ).await;
         loop {
             psqserver.process().await.unwrap();

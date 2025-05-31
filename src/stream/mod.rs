@@ -18,6 +18,7 @@ use tokio::{
 
 use crate::{
     client::PsqClient,
+    jwt::Jwt,
     PsqError,
     VERSION_IDENTIFICATION,
     util::MAX_DATAGRAM_SIZE,
@@ -169,6 +170,46 @@ fn check_common_headers(
     }
 
     Ok(())
+}
+
+
+/// Check if this is "authorization" header, in that case validate the JWT token
+/// in header. `permission` is the required permission label that should be included
+/// in token claims. `jwt_secret` is the secret used to decode the token.
+fn check_authorized(
+    header: &quiche::h3::Header,
+    permission: &String,
+    jwt_secret: &Vec<u8>,
+) -> Result<bool, PsqError> {
+    if header.name() == b"authorization" {
+        let value = String::from_utf8_lossy(header.value());
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            match Jwt::verify_token(token, jwt_secret) {
+                Ok(token) => {
+                    if token.claims.has_permission(permission) {
+                        info!("Received valid token: {:?}", token.claims);
+                        return Ok(true);
+                    } else {
+                        info!("Received token with insufficient permissions: {:?}",
+                            token.claims
+                        );
+                        return Err(PsqError::HttpResponse(
+                            403,
+                            "Permission denied".to_string(),
+                        ));
+                    }
+                }
+                Err(err) => {
+                    warn!("Received invalid JWT token");
+                    return Err(PsqError::HttpResponse(
+                        401,
+                        format!("Invalid token: {}", err),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 

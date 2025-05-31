@@ -10,7 +10,12 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{Files, IpEndpoint, PsqError, UdpEndpoint};
+use crate::{
+    Files,
+    IpEndpoint,
+    PsqError,
+    UdpEndpoint,
+};
 
 use super::PsqServer;
 
@@ -25,23 +30,44 @@ use super::PsqServer;
 pub struct Config {
     cert_file: String,
     key_file: String,
+    #[serde(default = "default_jwt_secret")]
+    jwt_secret: String,
     endpoints: Vec<Endpoint>,
+}
+
+fn default_jwt_secret() -> String {
+    "not-secret".to_string()
+}
+
+
+/// Common attributes to different endpoint types.
+#[derive(Debug, Deserialize)]
+pub struct Common {
+    /// Path to this endpoint.
+    pub path: String,
+
+    /// Permission label required to be present in JWT token from client. If not
+    /// specified, anyone can access this endpoint without authorization.
+    pub permission: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 enum Endpoint {
     IpEndpoint {
-        path: String,
+        #[serde(flatten)]
+        common: Common,
         ifprefix: String,
         addresspools: Vec<String>,
         routes: Vec<String>,
     },
     UdpEndpoint {
-        path: String,
+        #[serde(flatten)]
+        common: Common,
     },
     Files {
-        path: String,
+        #[serde(flatten)]
+        common: Common,
         root: String,
     },
 }
@@ -72,6 +98,7 @@ impl Config {
         Config{
             cert_file: "src/bin/cert.crt".to_string(),
             key_file: "src/bin/cert.key".to_string(),
+            jwt_secret: "not-secret".to_string(),
             endpoints: Vec::new(),
         }
     }
@@ -87,6 +114,11 @@ impl Config {
         &self.key_file
     }
 
+    /// Secret used to decode JWT tokens.
+    pub fn jwt_secret(&self) -> &String {
+        &self.jwt_secret
+    }
+
     /// Apply server endpoint settings from configuration.
     /// See [server-example.json] for an example configuration
     /// with endpoints.
@@ -95,26 +127,38 @@ impl Config {
     pub async fn set_server_endpoints(&self, server: &mut PsqServer) -> Result<(), PsqError> {
         for endpoint in &self.endpoints {
             match endpoint {
-                Endpoint::IpEndpoint { path, ifprefix, addresspools, routes } => {
-                    debug!("Adding IpEndpoint at '{}', ifprefix: {}", path, ifprefix);
+                Endpoint::IpEndpoint { common, ifprefix, addresspools, routes } => {
+                    debug!("Adding IpEndpoint at '{}', ifprefix: {}", common.path, ifprefix);
                     let mut ipendpoint = IpEndpoint::new(ifprefix);
                     for ap in addresspools {
-                        debug!("Adding addrespool: {}", ap);
+                        debug!("Adding addresspool: {}", ap);
                         ipendpoint.add_addresspool(ap.parse()?)?;
                     }
                     for route in routes {
                         debug!("Adding route: {}", route);
                         ipendpoint.add_route(route.parse()?)?;
                     }
-                    server.add_endpoint(path, Box::new(ipendpoint)).await;
+                    if let Some(permission) = &common.permission {
+                        ipendpoint.require_permission(permission);
+                    }
+                    server.add_endpoint(&common.path, Box::new(ipendpoint)).await;
                 }
-                Endpoint::UdpEndpoint { path } => {
-                    debug!("Adding UdpEndpoint at '{}'", path);
-                    server.add_endpoint(path, UdpEndpoint::new()).await;
+                Endpoint::UdpEndpoint { common } => {
+                    debug!("Adding UdpEndpoint at '{}'", common.path);
+                    let mut udpendpoint = UdpEndpoint::new();
+                    if let Some(permission) = &common.permission {
+                        udpendpoint.require_permission(permission);
+                    }
+                    server.add_endpoint(&common.path, Box::new(udpendpoint)).await;
                 }
-                Endpoint::Files { path, root } => {
-                    debug!("Adding Files at '{}', root: '{}'", path, root);
-                    server.add_endpoint(path, Files::new(root)).await;
+                Endpoint::Files { common, root } => {
+                    debug!("Adding Files at '{}', root: '{}'", common.path, root);
+                    let mut files = Files::new(root);
+                    if let Some(permission) = &common.permission {
+                        files.require_permission(permission);
+                    }
+
+                    server.add_endpoint(&common.path, Box::new(files)).await;
                 }
             }
         }

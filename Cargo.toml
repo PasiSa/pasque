@@ -31,5 +31,6 @@ serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1.45", features = ["full"] }
 tokio-util = "0.7"
+tempfile = "3"
 tun = { version = "0.7", features = ["async"] }
 url = "2.5"

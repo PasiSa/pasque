@@ -4,9 +4,7 @@ An UDP over HTTP/3 (**[RFC 9298](https://datatracker.ietf.org/doc/html/rfc9298)*
 and IP over HTTP/3 implementation
 (**[RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484)**). Built using
 **[Quiche](https://github.com/cloudflare/quiche/)** as the HTTP/3 & QUIC
-implementation. The project is yet under construction, which probably is obvious
-when browsing the code, and some features are yet missing or not yet fully
-functional.
+implementation.
 
 ## Building and testing
 
@@ -52,25 +50,44 @@ certificate check.
 ## Server configuration
 
 An example server configuration file is provided in
-**[server-example.json](src/bin/server-example.json)**. It demonstrates
-configurations for an IP tunnel endpoint (type: `IpEndpoint`), UDP proxy
-endpoint (type: `UdpEndpoint`) and an endpoint serving
-static files (type: `Files`).
+**[server-example.json](src/bin/server-example.json)**. It has a few global
+fields defining the server operation:
 
+- **cert_file**: path to the PEM certificate file used in the TLS connection.
+
+- **key_file**: path to the private key needed with the certificate.
+
+- **jwt_secret**: Secret that is used to decode the JWT tokens. This should
+  actually be sufficiently long randomly generated string.
+
+After the global parameters, there are configurations for different endpoints
+that the server operates: IP tunnel endpoint (type: `IpEndpoint`), UDP proxy
+endpoint (type: `UdpEndpoint`) and an endpoint serving static files (type:
+`Files`).
+
+Each endpoint type has the following common configurable fields:
+
+- **path**: the URL path used to access the endpoint.
+
+- **permission**: (Optional) A permission label required in the JWT token for
+  access. A token may include one or more such labels to authorize access to
+  specific endpoints. If omitted, the endpoint is publicly accessible without
+  authentication. If provided and not matched by the token, the request is
+  rejected.
 
 ### IP Tunnel (IpEndpoint)
 
 The following fields are used to configure an IP tunnel:
 
-* **ifprefix**: Prefix for the names of TUN interfaces created for clients. Each
+- **ifprefix**: Prefix for the names of TUN interfaces created for clients. Each
   client is assigned a unique interface with this prefix (e.g., ifprefix-iN,
   where N is an integer).
 
-* **addresspools**: A list of network prefixes used to assign addresses to
+- **addresspools**: A list of network prefixes used to assign addresses to
   clients. Each new client receives one address from each specified prefix. This
   allows support for both IPv4 and IPv6 addresses.
 
-* **routes**: Network prefixes advertised to the client as available routes.
+- **routes**: Network prefixes advertised to the client as available routes.
 
 ### UDP Proxy (UdpEndpoint)
 
@@ -81,10 +98,35 @@ as URI variables in the HTTP request, as defined in **[RFC 9298]**.
 
 The `Files` endpoint has a single field:
 
-* **root**: Path to the directory on the server’s file system from which static
+- **root**: Path to the directory on the server’s file system from which static
   files are served.
 
 [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
+
+## Generating JWT tokens
+
+You can use the `gentoken` binary to generate JWT tokens for testing endpoint
+authorization with `psq-client`.
+
+Example usage:
+
+    cargo run --bin gentoken -- --sub alice --lifetime 30 --permissions ipauth,regular --secret mysecret
+
+This command generates a token for the subject _alice_, valid for 30 minutes.
+The token includes the permission labels `ipauth` and `regular`, which correspond to
+those in the example server configuration. The secret.key file must contain the
+same secret as the server’s jwt_secret field, used for encoding and decoding the
+token.
+
+This creates a token for _alice_ that is valid for 30 minutes. Then token has
+permission labels `ipauth` and `regular`, matching the example JSON
+configuration mentioned above. File `mysecret` contains the secret that is used
+to encode and decode the token. It should be the same as `jwt_secret` field in
+server configuration. The program prints the generated token to standard output.
+
+The token is printed to standard output and can be passed to `psq-client` using
+the `--token` option, which adds it to the Authorization header of HTTP
+requests.
 
 ## Further information
 

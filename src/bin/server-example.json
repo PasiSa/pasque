@@ -1,9 +1,11 @@
 {
     "cert_file": "src/bin/cert.crt",
     "key_file": "src/bin/cert.key",
+    "jwt_secret": "very-secret",
     "endpoints": [
         {
             "path": "ip",
+            "permission": "ipauth",
             "type": "IpEndpoint",
             "ifprefix": "tun-s0",
             "addresspools": [ "10.76.0.1/24", "fd76:0212:dead::1/48" ],
@@ -11,10 +13,12 @@
         },
         {
             "path": "udp",
+            "permission": "regular",
             "type": "UdpEndpoint"
         },
         {
             "path": "files",
+            "permission": "regular",
             "type": "Files",
             "root": "."
         }

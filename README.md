@@ -26,10 +26,10 @@ that the latter requires sudo privileges, and is so far tested only on Linux.
 
     cargo run --bin psq-server
 
-The example server listens to UDP port 443 for incoming HTTP/3 and QUIC
-connections (use `-a` option to change the address and port to bind). Clients
-are allocated IP addresses from the given IP network, hence also the prefix
-length is given.
+The example server listens on UDP port 443 for incoming HTTP/3 and QUIC
+connections. You can change the address and port using the `-a` option. To bind to
+multiple addresses, specify the `-a` option multiple times. A common use case is
+to bind both IPv4 and IPv6 addresses, for example: `-a 0.0.0.0:443 -a [::]:443`.
 
 The server needs a JSON configuration file that gives links to files containing
 TLS certificate and private key are given in a JSON configuration file. The

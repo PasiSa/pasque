@@ -138,6 +138,14 @@ impl ClientSession {
     }
 
 
+    pub (crate) async fn send_packets(&self) {
+        if let Err(e) = send_quic_packets(&self.conn, &self.socket).await {
+            error!("Error sending packets: {}", e);
+            // TODO: Close client connection
+        }
+    }
+
+
     pub (crate) async fn handle_h3_requests(&mut self) {
         self.handle_writable().await;
 

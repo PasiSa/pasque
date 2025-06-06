@@ -16,10 +16,15 @@
 //! 
 //! ```no_run
 //! use pasque::{server::Config, PsqServer, UdpEndpoint};
+//! use std::net::SocketAddr;
+//! use std::str::FromStr;
 //! #[tokio::main]
 //! async fn main() {
 //!     let config = Config::read_from_file("server.json").unwrap();
-//!     let mut psqserver = PsqServer::start("0.0.0.0:443", &config).await.unwrap();
+//!     let mut psqserver = PsqServer::start(
+//!         &vec![SocketAddr::from_str("0.0.0.0:443").unwrap()],
+//!         &config,
+//!     ).await.unwrap();
 //!     psqserver.add_endpoint("udp", Box::new(UdpEndpoint::new())).await;
 //! }
 //! ```

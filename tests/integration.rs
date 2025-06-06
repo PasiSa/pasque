@@ -1,5 +1,9 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    net::SocketAddr,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::{
     fs,
@@ -32,7 +36,7 @@ async fn test_get_request() {
     let config = Config::create_default();
     let server = tokio::spawn(async move {
         let mut psqserver = PsqServer::start(
-            addr,
+            &vec![SocketAddr::from_str(addr).unwrap()],
             &config,
         ).await.unwrap();
         psqserver.add_endpoint(
@@ -89,7 +93,10 @@ async fn test_get_request() {
 
 async fn run_server(addr: &str, shutdown: Arc<Notify>) {
     let config = Config::create_default();
-    let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
+    let mut psqserver = PsqServer::start(
+        &vec![SocketAddr::from_str(addr).unwrap()],
+        &config,
+    ).await.unwrap();
     psqserver.add_endpoint(
         "udp",
         Box::new(UdpEndpoint::new()),
@@ -208,7 +215,10 @@ async fn tunnel_closing() {
     let addr = "127.0.0.1:9003";
     let server = tokio::spawn(async move {
         let config = Config::create_default();
-        let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
+        let mut psqserver = PsqServer::start(
+            &vec![SocketAddr::from_str(addr).unwrap()],
+            &config,
+        ).await.unwrap();
         psqserver.add_endpoint(
             "udp",
             Box::new(UdpEndpoint::new()),
@@ -257,8 +267,15 @@ async fn tunnel_closing() {
 }
 
 
-async fn run_server_from_config(addr: &str, config: Config, shutdown: Arc<Notify>) {
-    let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
+async fn run_server_from_config(
+    addresses: Vec<SocketAddr>,
+    config: Config,
+    shutdown: Arc<Notify>,
+) {
+    let mut psqserver = PsqServer::start(
+        &addresses,
+        &config,
+    ).await.unwrap();
     loop {
         tokio::select! {
             _ = shutdown.notified() => {
@@ -273,13 +290,49 @@ async fn run_server_from_config(addr: &str, config: Config, shutdown: Arc<Notify
 
 
 #[tokio::test]
+async fn multiple_server_addresses() {
+    let addresses = vec![
+        SocketAddr::from_str("127.0.0.1:7003").unwrap(),
+        SocketAddr::from_str("[::1]:7003").unwrap(),
+        SocketAddr::from_str("127.0.0.1:7203").unwrap(),
+    ];
+    let server_notify = Arc::new(Notify::new());
+    let config = Config::read_from_file("tests/endpoints.json").unwrap();
+    let server = tokio::spawn(
+        run_server_from_config(addresses.clone(), config, server_notify.clone())
+    );
+
+    for addr in addresses {
+        let mut psqclient = PsqClient::connect(
+            format!("https://{}/", addr).as_str(),
+            true,
+        ).await.unwrap();
+
+        let _udptunnel = UdpTunnel::connect(
+            &mut psqclient,
+            "udp",
+            "127.0.0.1",
+            9002,
+            "127.0.0.1:0".parse().unwrap(),
+        ).await.unwrap();
+    }
+
+    server.abort();
+}
+
+
+#[tokio::test]
 async fn authorization_success() {
     init_logger();
     let addr = "127.0.0.1:7001";
     let server_notify = Arc::new(Notify::new());
     let config = Config::read_from_file("tests/endpoints_auth.json").unwrap();
     let server = tokio::spawn(
-        run_server_from_config(addr, config, server_notify.clone())
+        run_server_from_config(
+            vec![SocketAddr::from_str(addr).unwrap()],
+            config,
+            server_notify.clone(),
+        )
     );
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -325,7 +378,11 @@ init_logger();
     let server_notify = Arc::new(Notify::new());
     let config = Config::read_from_file("tests/endpoints_auth.json").unwrap();
     let server = tokio::spawn(
-        run_server_from_config(addr, config, server_notify.clone())
+        run_server_from_config(
+            vec![SocketAddr::from_str(addr).unwrap()],
+            config,
+            server_notify.clone(),
+        )
     );
 
     tokio::time::sleep(Duration::from_millis(100)).await;

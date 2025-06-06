@@ -9,6 +9,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures::stream::{FuturesUnordered, StreamExt};
 use ring::rand::SystemRandom;
 use tokio::{
     net::UdpSocket,
@@ -36,7 +37,7 @@ type Endpoints = HashMap<String, Box<dyn Endpoint>>;
 
 /// The main server that listens to incoming connections.
 pub struct PsqServer {
-    socket: Arc<UdpSocket>,
+    sockets: Vec<Arc<UdpSocket>>,
     qconfig: quiche::Config,
     conn_id_seed: ring::hmac::Key,
     clients: ClientMap,
@@ -46,14 +47,24 @@ pub struct PsqServer {
 
 impl PsqServer {
 
-    /// Configure and start the server listening at given address and port.
-    /// 
-    /// Sets up the certificate and endpoints as defined in `config`. See
-    /// documentation of the [Config] for details.
-    pub async fn start(address: &str, config: &Config) -> Result<PsqServer, PsqError> {
+    /// Initializes and starts the server, binding to the specified socket
+    /// addresses.
+    ///
+    /// Certificates and endpoints are configured based on the provided `config`
+    /// (see [Config] for details). To support both IPv4 and IPv6, the `address`
+    /// vector typically includes entries like 0.0.0.0:443 and [::]:443.
+    pub async fn start(
+        addresses: &Vec<SocketAddr>,
+        config: &Config,
+    ) -> Result<PsqServer, PsqError> {
+
         info!("Pasque server version {} starting", VERSION_IDENTIFICATION);
-        let socket =
-            tokio::net::UdpSocket::bind(address).await?;
+        let mut sockets = Vec::new();
+        for addr in addresses {
+            let socket = UdpSocket::bind(addr).await
+                .map_err(|e| PsqError::Custom(format!("Failed to bind to {}: {}", addr, e)))?;
+            sockets.push(Arc::new(socket));
+        }
 
         // Create the configuration for the QUIC connections.
         let mut qconfig = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
@@ -88,7 +99,7 @@ impl PsqServer {
             ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap();
 
         let mut server = PsqServer {
-            socket: Arc::new(socket),
+            sockets,
             qconfig,
             conn_id_seed,
             clients: ClientMap::new(),
@@ -102,20 +113,36 @@ impl PsqServer {
     }
 
 
+    /// Process incoming UDP datagrams.
     pub async fn process(&mut self) -> Result<(), PsqError> {
-        let mut buf = [0; 65535];
+        let mut futures = FuturesUnordered::new();
+        let socket_count = self.sockets.len();
 
-        let (len, from) = match self.socket.recv_from(&mut buf).await {
-            Ok(v) => v,
+        for i in 0..socket_count {
+            let socket = Arc::clone(&self.sockets[i]);
+            futures.push(async move {
+                let mut buf = [0u8; MAX_DATAGRAM_SIZE];
+                let res = socket.recv_from(&mut buf).await;
+                (res, buf, socket)
+            });
+        }
 
-            Err(e) => {
-                error!("recv() failed: {:?}", e);
-                return Err(PsqError::Io(e))
-            },
-        };
+        if let Some((res, buf, socket)) = futures.next().await {
+            let (len, from) = res.map_err(PsqError::Io)?;
+            let mut pkt_buf = buf[..len].to_vec();
+            self.process_udp(&socket, &mut pkt_buf, from).await?;
+        }
 
-        let pkt_buf = &mut buf[..len];
+        Ok(())
+    }
 
+
+    async fn process_udp(
+        &mut self,
+        socket: &Arc<UdpSocket>,
+        pkt_buf: &mut [u8],
+        from: SocketAddr,
+    ) -> Result<(), PsqError> {
         // Parse the QUIC packet's header.
         let hdr = match quiche::Header::from_slice(
             pkt_buf,
@@ -156,7 +183,7 @@ impl PsqServer {
 
                 let out = &out[..len];
 
-                if let Err(e) = self.socket.send_to(out, from).await {
+                if let Err(e) = socket.send_to(out, from).await {
                     error!("send() failed: {:?}", e);
                     return Err(PsqError::Io(e))
                 }
@@ -189,7 +216,7 @@ impl PsqServer {
 
                 let out = &out[..len];
 
-                if let Err(e) = self.socket.send_to(out, from).await {
+                if let Err(e) = socket.send_to(out, from).await {
                     error!("send() failed: {:?}", e);
                     return Err(PsqError::Io(e))
                 }
@@ -216,7 +243,7 @@ impl PsqServer {
 
             info!("New connection: IP={} dcid={:?} scid={:?}", from, hdr.dcid, hdr.scid);
 
-            let local_addr = self.socket.local_addr().unwrap();
+            let local_addr = socket.local_addr().unwrap();
             let conn = quiche::accept(
                 &scid,
                 odcid.as_ref(),
@@ -228,7 +255,7 @@ impl PsqServer {
 
             let (tx, rx) = watch::channel(conn.timeout());
             let client = ClientSession::new(
-                &self.socket,
+                &Arc::clone(socket),
                 conn,
                 tx,
                 &self.endpoints,
@@ -237,7 +264,7 @@ impl PsqServer {
 
             timeout_watcher(
                 Arc::clone(&client.connection()),
-                Arc::clone(&self.socket),
+                Arc::clone(&socket),
                 rx,
             );
 
@@ -252,7 +279,7 @@ impl PsqServer {
         };
 
         let recv_info = quiche::RecvInfo {
-            to: self.socket.local_addr().unwrap(),
+            to: socket.local_addr().unwrap(),
             from,
         };
 
@@ -303,10 +330,7 @@ impl PsqServer {
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         for client in self.clients.values_mut() {
-            if let Err(e) = send_quic_packets(&client.connection(), &self.socket).await {
-                error!("Error sending packets: {}", e);
-                // TODO: Close client connection
-            }
+            client.send_packets().await;
         }
     }
 
@@ -436,7 +460,7 @@ mod tests {
     async fn read_endpoint_config() {
         let config = Config::read_from_file("tests/endpoints.json").unwrap();
         let psqserver = PsqServer::start(
-            &"0.0.0.0:4433",
+            &vec!["0.0.0.0:4433".parse().unwrap()],
             &config,
         ).await.unwrap();
         let endpoints = psqserver.endpoints.lock().await;

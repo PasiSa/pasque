@@ -2,6 +2,7 @@
 extern crate log;
 
 use clap::Parser;
+use std::net::SocketAddr;
 
 use pasque::{
     PsqServer,
@@ -43,8 +44,8 @@ async fn main() {
 #[command(version, about, long_about = None)]
 pub struct Args {
     /// Local IP address and UDP port to bind.
-    #[arg(short, long, default_value = "0.0.0.0:443")]
-    address: String,
+    #[arg(short, long, default_value = "0.0.0.0:443", value_delimiter = ' ', num_args = 1..)]
+    address: Vec<SocketAddr>,
 
     /// Configuration file to read.
     #[arg(short, long, default_value = "src/bin/server-example.json")]
@@ -59,7 +60,7 @@ impl Args {
         args
     }
 
-    pub fn address(&self) -> &String {
+    pub fn address(&self) -> &Vec<SocketAddr> {
         &self.address
     }
 

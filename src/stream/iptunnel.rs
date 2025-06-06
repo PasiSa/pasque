@@ -668,10 +668,15 @@ impl Encoder<BytesMut> for IpPacketCodec {
 /// 
 /// ```no_run
 /// use pasque::{server::Config, PsqServer, IpEndpoint};
+/// use std::net::SocketAddr;
+/// use std::str::FromStr;
 /// #[tokio::main]
 /// async fn main() {
 ///     let config = Config::read_from_file("server.json").unwrap();
-///     let mut psqserver = PsqServer::start("0.0.0.0:443", &config).await.unwrap();
+///     let mut psqserver = PsqServer::start(
+///         &vec![SocketAddr::from_str("0.0.0.0:443").unwrap()],
+///         &config
+///     ).await.unwrap();
 ///
 ///     let mut ip_endpoint = IpEndpoint::new("tun-s");
 ///     ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
@@ -953,6 +958,9 @@ impl AddressPool {
 
 #[cfg(all(test, feature = "tuntest"))]
 mod tests {
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
     use tokio::time::{Duration, timeout};
@@ -973,7 +981,10 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let config = Config::create_default();
-            let mut psqserver = PsqServer::start(addr, &config).await.unwrap();
+            let mut psqserver = PsqServer::start(
+                &vec![SocketAddr::from_str(addr).unwrap()],
+                &config,
+            ).await.unwrap();
             let mut ip_endpoint = IpEndpoint::new(
                 "tun-s",
             );

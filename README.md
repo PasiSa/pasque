@@ -114,15 +114,9 @@ Example usage:
 
 This command generates a token for the subject _alice_, valid for 30 minutes.
 The token includes the permission labels `ipauth` and `regular`, which correspond to
-those in the example server configuration. The secret.key file must contain the
-same secret as the server’s jwt_secret field, used for encoding and decoding the
-token.
-
-This creates a token for _alice_ that is valid for 30 minutes. Then token has
-permission labels `ipauth` and `regular`, matching the example JSON
-configuration mentioned above. File `mysecret` contains the secret that is used
-to encode and decode the token. It should be the same as `jwt_secret` field in
-server configuration. The program prints the generated token to standard output.
+those in the example server configuration. The `mysecret` file contains secret,
+that must match the secret given in the `jwt_secret` field in the server
+configuration, used for encoding and decoding the token.
 
 The token is printed to standard output and can be passed to `psq-client` using
 the `--token` option, which adds it to the Authorization header of HTTP
@@ -132,4 +126,4 @@ requests.
 
 - **[RFC 9298: Proxying UDP in HTTP](https://datatracker.ietf.org/doc/html/rfc9298)**
 - **[RFC 9484: Proxying IP in HTTP](https://datatracker.ietf.org/doc/html/rfc9484)**
-- **[Masque WG in IETF](https://datatracker.ietf.org/wg/masque/)**
+- **[Masque WG in the IETF](https://datatracker.ietf.org/wg/masque/)**

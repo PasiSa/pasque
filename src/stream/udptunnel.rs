@@ -14,7 +14,6 @@ use crate::{
     PsqError,
     server::Endpoint,
     util::{
-        hdrs_to_strings,
         send_quic_packets, 
         MAX_DATAGRAM_SIZE,
     },
@@ -228,71 +227,36 @@ impl PsqStream for UdpTunnel {
     }
 
 
-    /// Called at the client when response from HTTP/3 server arrives.
-    async fn process_h3_response(
+    fn process_h3_headers(
+        &mut self,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        _list: &Vec<Header>,
+    ) -> Result<(), PsqError> {
+        self.start_socket_listener(&conn, &socket);
+        Ok(())
+    }
+
+
+    async fn process_h3_data(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
-        socket: &Arc<UdpSocket>,
-        event: quiche::h3::Event,
+        _socket: &Arc<UdpSocket>,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
-
-        match event {
-            quiche::h3::Event::Headers { list, .. } => {
-                info!(
-                    "got response headers {:?} on stream id {}",
-                    hdrs_to_strings(&list),
-                    self.stream_id
-                );
-
-                let status = get_h3_status(&list)?;
-                if status != 200 {
-                    return Err(PsqError::HttpResponse(status, "CONNECT request unsuccesful".to_string()))
-                }
-                self.start_socket_listener(&conn, &socket);
-                Ok(())
-            },
-
-            quiche::h3::Event::Data => {
-                let c = &mut *conn.lock().await;
-                while let Ok(read) =
-                    h3_conn.recv_body(c, self.stream_id, buf)
-                {
-                    debug!(
-                        "got {} bytes of response data on stream {}",
-                        read, self.stream_id
-                    );
-                }
-                Ok(())
-            },
-
-            quiche::h3::Event::Finished => {
-                info!(
-                    "UdpTunnel stream finished!"
-                );
-                Err(PsqError::StreamClose("UdpTunnel stream finished".into()))
-            },
-
-            quiche::h3::Event::Reset(e) => {
-                error!(
-                    "request was reset by peer with {}, closing...",
-                    e
-                );
-
-                let c = &mut *conn.lock().await;
-                c.close(true, 0x100, b"kthxbye").unwrap();
-                Err(PsqError::StreamClose(format!("UdpTunnel reset by peer: {}", e)))
-            },
-
-            quiche::h3::Event::PriorityUpdate => unreachable!(),
-
-            quiche::h3::Event::GoAway => {
-                info!("GOAWAY");
-                Ok(())
-            },
+        let c = &mut *conn.lock().await;
+        while let Ok(read) =
+            h3_conn.recv_body(c, self.stream_id, buf)
+        {
+            debug!(
+                "got {} bytes of response data on stream {}",
+                read, self.stream_id
+            );
         }
+        Ok(())
     }
+
 
     fn stream_id(&self) -> u64 {
         self.stream_id

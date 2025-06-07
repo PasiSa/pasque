@@ -5,8 +5,8 @@ use std::{
     sync::Arc,
 };
 
+use quiche::h3::NameValue;
 use ring::rand::*;
-
 use tokio::{
     net::UdpSocket,
     time::Duration,
@@ -16,7 +16,7 @@ use tokio::{
 use crate::{
     PsqError,
     stream::{process_h3_datagram, PsqStream},
-    util::{send_quic_packets, timeout_watcher},
+    util::{hdrs_to_strings, send_quic_packets, timeout_watcher},
 };
 
 const MAX_DATAGRAM_SIZE: usize = 1350;
@@ -295,24 +295,78 @@ impl PsqClient {
         }
 
         // Process HTTP/3 events.
+        let mut status = 0;
         loop {
             match self.poll_helper().await {
                 Ok((stream_id, event)) => {
-                    let stream = self.streams.get_mut(&stream_id);
-                    if stream.is_some() {
-                        if let Err(e) = stream.unwrap().process_h3_response(
-                            &mut self.h3_conn.as_mut().unwrap(),
-                            &self.conn,
-                            &self.socket,
-                            event,
-                            buf
-                        ).await {
-                            match e {
-                                PsqError::StreamClose(_) => {
-                                    self.remove_stream(stream_id).await;
-                                },
-                                _ => return Err(e)
-                            }
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        match event {
+                            quiche::h3::Event::Headers { list, .. } => {
+                                info!(
+                                    "got response headers {:?} on stream id {}",
+                                    hdrs_to_strings(&list),
+                                    stream_id
+                                );
+                                status = get_h3_status(&list)?;
+                                stream.process_h3_headers(
+                                    &self.conn,
+                                    &self.socket,
+                                    &list,
+                                )?;
+                            },
+                            quiche::h3::Event::Data => {
+                                if status != 200 {
+                                    let c = &mut self.conn.lock().await;
+                                    if let Ok(n) = self.h3_conn.as_mut().unwrap().recv_body(
+                                        c,
+                                        stream_id,
+                                        buf,
+                                    ) {
+                                        return Err(PsqError::HttpResponse(
+                                            status,
+                                            format!(
+                                                "{}",
+                                                String::from_utf8_lossy(&buf[..n]),
+                                            ),
+                                        ))
+                                    } else {
+                                        return Err(PsqError::HttpResponse(
+                                            status,
+                                            "-".to_string(),
+                                        ))
+                                    }
+                                }
+                                stream.process_h3_data(
+                                    &mut self.h3_conn.as_mut().unwrap(),
+                                    &self.conn,
+                                    &self.socket,
+                                    buf,
+                                ).await?;
+                            },
+                            quiche::h3::Event::Finished => {
+                                info!(
+                                    "Stream finished"
+                                );
+                                self.remove_stream(stream_id).await;
+                            },
+                            quiche::h3::Event::Reset(e) => {
+                                error!(
+                                    "request was reset by peer with {}, closing...",
+                                    e
+                                );
+                                {
+                                    let c = &mut self.conn.lock().await;
+                                    c.close(true, 0x100, b"kthxbye").unwrap();
+                                }
+                                self.remove_stream(stream_id).await;
+                            },
+
+                            quiche::h3::Event::PriorityUpdate => unreachable!(),
+
+                            quiche::h3::Event::GoAway => {
+                                info!("GOAWAY");  // TODO: process somehow
+                                //Ok(())
+                            },
                         }
                     } else {
                         error!("Received unknown stream ID: {}", stream_id);
@@ -351,6 +405,23 @@ impl PsqClient {
         self.h3_conn.as_mut().unwrap().poll(&mut conn)
     }
 
+}
+
+
+/// Extracts the HTTP/3 status code from the headers.
+/// Returns the status code as u8 if found and valid, otherwise returns PsqError.
+fn get_h3_status(headers: &[quiche::h3::Header]) -> Result<u16, PsqError> {
+    for hdr in headers {
+        if hdr.name() == b":status" {
+            let status_str = String::from_utf8_lossy(hdr.value());
+            return match status_str.parse::<u16>() {
+                Ok(status) if status <= u16::MAX as u16 => Ok(status as u16),
+                Ok(_) => Err(PsqError::HttpResponse(500, "Status code out of range".to_string())),
+                Err(_) => Err(PsqError::HttpResponse(500, "Invalid :status header".to_string())),
+            };
+        }
+    }
+    Err(PsqError::HttpResponse(500, "Missing :status header".to_string()))
 }
 
 

@@ -29,7 +29,6 @@ use crate::{
     platform::{self, get_os_networking},
     server::Endpoint,
     util::{
-        hdrs_to_strings,
         send_quic_packets, 
     },
     PsqError,
@@ -539,78 +538,43 @@ impl PsqStream for IpTunnel {
     }
 
 
-    async fn process_h3_response(
+    fn process_h3_headers(
+        &mut self,
+        _conn: &Arc<Mutex<quiche::Connection>>,
+        _socket: &Arc<UdpSocket>,
+         _list: &Vec<Header>,
+    ) -> Result<(), PsqError> {
+        Ok(())
+    }
+
+
+    async fn process_h3_data(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
-        event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
+        let c = &mut *conn.lock().await;
+        while let Ok(read) =
+            h3_conn.recv_body(c, self.stream_id, buf)
+        {
+            debug!(
+                "got {} bytes of response data on stream {}",
+                read, self.stream_id
+            );
 
-        match event {
-            quiche::h3::Event::Headers { list, .. } => {
-                info!(
-                    "got response headers {:?} on stream id {}",
-                    hdrs_to_strings(&list),
-                    self.stream_id
-                );
+            self.setup_tun_dev(&conn, &socket).await?;
 
-                let status = get_h3_status(&list)?;
-                if status != 200 {
-                    return Err(PsqError::HttpResponse(status, "CONNECT request unsuccesful".to_string()))
-                }
-                Ok(())
-            },
-
-            quiche::h3::Event::Data => {
-                let c = &mut *conn.lock().await;
-                while let Ok(read) =
-                    h3_conn.recv_body(c, self.stream_id, buf)
-                {
-                    debug!(
-                        "got {} bytes of response data on stream {}",
-                        read, self.stream_id
-                    );
-
-                    self.setup_tun_dev(&conn, &socket).await?;
-
-                    // We assume that there is at least an ADDRESS_ASSIGN capsule
-                    // from server. There may also be other capsules.
-                    // For now, client does not choose address
-                    let mut off = 0;
-                    while off < read {
-                        off += self.process_h3_capsule(&buf[off..read])?;
-                    }
-                }
-                Ok(())
-            },
-
-            quiche::h3::Event::Finished => {
-                info!(
-                    "IpTunnel stream finished"
-                );
-                Err(PsqError::StreamClose("IpTunnel stream finished".into()))
-            },
-
-            quiche::h3::Event::Reset(e) => {
-                error!(
-                    "request was reset by peer with {}, closing...",
-                    e
-                );
-
-                let c = &mut *conn.lock().await;
-                c.close(true, 0x100, b"kthxbye").unwrap();
-                Err(PsqError::StreamClose(format!("IpTunnel reset by peer: {}", e)))
-            },
-
-            quiche::h3::Event::PriorityUpdate => unreachable!(),
-
-            quiche::h3::Event::GoAway => {
-                info!("GOAWAY");  // TODO: process somehow
-                Ok(())
-            },
+            // We assume that there is at least an ADDRESS_ASSIGN capsule
+            // from server. There may also be other capsules.
+            // For now, client does not choose address
+            let mut off = 0;
+            while off < read {
+                off += self.process_h3_capsule(&buf[off..read])?;
+            }
         }
+        Ok(())
     }
 
 

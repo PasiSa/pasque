@@ -10,7 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use quiche::h3::NameValue;
+use quiche::h3::{Header, NameValue};
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -56,20 +56,31 @@ pub trait PsqStream: Any + Send + Sync {
 
     fn as_any(&self) -> &dyn Any;
 
-    /// Process HTTP/3 response at the client.
+
+    /// Process headers from HTTP/3 response at the client.
     /// 
-    /// Will be called repeatedly to process the different types of HTTP/3
-    /// events: `Headers` for processing response headers, `Data` for processing
-    /// the payload from buffer `buf`, and so on (see `Event` documentation for
-    /// different types of events).
-    async fn process_h3_response(
+    /// Status is parsed already earlier. Only headers specific to the current
+    /// type of stream should be processed. `list` contains incoming headers.
+    fn process_h3_headers(
+        &mut self,
+        conn: &Arc<Mutex<quiche::Connection>>,
+        socket: &Arc<UdpSocket>,
+        list: &Vec<Header>,
+    ) -> Result<(), PsqError>;
+
+
+    /// Process HTTP/3 response data following the headers at the client.
+    /// 
+    /// This is only called if the status code in response was 200 OK. In other
+    /// cases, The calling function does the error processing.
+    async fn process_h3_data(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
-        event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError>;
+
 
     /// Stream ID of the CONNECT request that initiated this tunnel or proxy session.
     /// 
@@ -210,23 +221,6 @@ fn check_authorized(
         }
     }
     Ok(false)
-}
-
-
-/// Extracts the HTTP/3 status code from the headers.
-/// Returns the status code as u8 if found and valid, otherwise returns PsqError.
-fn get_h3_status(headers: &[quiche::h3::Header]) -> Result<u16, PsqError> {
-    for hdr in headers {
-        if hdr.name() == b":status" {
-            let status_str = String::from_utf8_lossy(hdr.value());
-            return match status_str.parse::<u16>() {
-                Ok(status) if status <= u16::MAX as u16 => Ok(status as u16),
-                Ok(_) => Err(PsqError::HttpResponse(500, "Status code out of range".to_string())),
-                Err(_) => Err(PsqError::HttpResponse(500, "Invalid :status header".to_string())),
-            };
-        }
-    }
-    Err(PsqError::HttpResponse(500, "Missing :status header".to_string()))
 }
 
 

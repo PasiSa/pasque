@@ -21,7 +21,6 @@ use crate::{
         prepare_h3_request,
         PsqStream,
     },
-    util::hdrs_to_strings,
 };
 
 
@@ -110,97 +109,47 @@ impl PsqStream for FileStream {
     }
 
 
-    async fn process_h3_response(
+    fn process_h3_headers(
+        &mut self,
+        _conn: &Arc<Mutex<quiche::Connection>>,
+        _socket: &Arc<UdpSocket>,
+        _list: &Vec<Header>,
+    ) -> Result<(), PsqError> {
+        Ok(())
+    }
+
+
+    async fn process_h3_data(
         &mut self,
         h3_conn: &mut quiche::h3::Connection,
         conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
-        event: quiche::h3::Event,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
+        let c = &mut *conn.lock().await;
+        while let Ok(read) =
+            h3_conn.recv_body(c, self.stream_id, buf)
+        {
+            debug!(
+                "got {} bytes of response data on stream {}",
+                read, self.stream_id
+            );
 
-        match event {
-            quiche::h3::Event::Headers { list, .. } => {
-                info!(
-                    "got response headers {:?} on stream id {}",
-                    hdrs_to_strings(&list),
-                    self.stream_id
-                );
+            debug!("{}", unsafe {
+                std::str::from_utf8_unchecked(&buf[..read])
+            });
 
-                for hdr in list {
-                    match hdr.name() {
-                        b":status" => {
-                            let s = String::from_utf8_lossy(hdr.value());
-                            self.status = match s.parse::<u16>() {
-                                Ok(s) => s,
-                                Err(_) => {
-                                    return Err(PsqError::Custom("Invalid status code in Header!".to_string()))
-                                }
-                            }
-                        },
-                        _ => (),
-                    }
-                }
-                Ok(())
-            },
-
-            quiche::h3::Event::Data => {
-                let c = &mut *conn.lock().await;
-                while let Ok(read) =
-                    h3_conn.recv_body(c, self.stream_id, buf)
-                {
-                    debug!(
-                        "got {} bytes of response data on stream {}",
-                        read, self.stream_id
-                    );
-
-                    debug!("{}", unsafe {
-                        std::str::from_utf8_unchecked(&buf[..read])
-                    });
-
-                    // TODO: very simple implementation, should do proper error handling
-                    // and prepare to receive big files.
-                    if self.status == 200 {
-                        let mut file = std::fs::File::create(&self.name)?;
-                        file.write_all(&buf[..read])?;
-                        self.written = read;
-                    } else {
-                        return Err(PsqError::HttpResponse(
-                            self.status,
-                            String::from_utf8_lossy(buf).to_string()),
-                        )
-                    }
-                }
-                Ok(())
-            },
-
-            quiche::h3::Event::Finished => {
-                info!(
-                    "FileStream finished!"
-                );
-                Err(PsqError::StreamClose("FileStream finished".into()))
-            },
-
-            quiche::h3::Event::Reset(e) => {
-                error!(
-                    "request was reset by peer with {}, closing...",
-                    e
-                );
-
-                let c = &mut *conn.lock().await;
-                c.close(true, 0x100, b"kthxbye").unwrap();
-                Err(PsqError::StreamClose(format!("FileStream reset by peer: {}", e)))
-
-            },
-
-            quiche::h3::Event::PriorityUpdate => unreachable!(),
-
-            quiche::h3::Event::GoAway => {
-                info!("GOAWAY");
-                Ok(())
-            },
+            // TODO: very simple implementation, should do proper error handling
+            // and prepare to receive big files.
+            // Maintaining self.status here is silly, some further refactoring needed.
+            self.status = 200;
+            let mut file = std::fs::File::create(&self.name)?;
+            file.write_all(&buf[..read])?;
+            self.written = read;
         }
+        Ok(())
     }
+
 
     fn stream_id(&self) -> u64 {
         self.stream_id

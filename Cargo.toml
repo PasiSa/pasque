@@ -1,6 +1,6 @@
 [package]
 name = "pasque"
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "UDP and IP over HTTP/3"

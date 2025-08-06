@@ -61,13 +61,16 @@ pub trait PsqStream: Any + Send + Sync {
     ///
     /// This is only called if the status code in response was 200 OK. In other
     /// cases, The calling function does the error processing.
-    async fn process_h3_data(
+    async fn process_h3_response(
         &mut self,
-        h3_conn: &mut quiche::h3::Connection,
+        h3_conn: &Arc<Mutex<quiche::h3::Connection>>,
         conn: &Arc<Mutex<quiche::Connection>>,
         socket: &Arc<UdpSocket>,
         buf: &mut [u8],
     ) -> Result<(), PsqError>;
+
+    /// Process stream data after connect. Both ends.
+    async fn process_data(&mut self, buf: &[u8]) -> Result<(), PsqError>;
 
     /// Stream ID of the CONNECT request that initiated this tunnel or proxy session.
     ///
@@ -209,7 +212,8 @@ async fn start_connection<'a>(
 
     let a = pconn.connection();
     let mut conn = a.lock().await;
-    let h3_conn = pconn.h3_connection().as_mut().unwrap();
+    let b = pconn.h3_connection().as_ref().unwrap();
+    let mut h3_conn = b.lock().await;
 
     let stream_id = h3_conn.send_request(&mut *conn, &req, false)?;
 
@@ -248,4 +252,7 @@ fn send_h3_dgram(
 
 pub mod filestream;
 pub mod iptunnel;
+pub mod pty;
+mod terminal;
+mod terminal_unix;
 pub mod udptunnel;

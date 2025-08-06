@@ -406,10 +406,8 @@ pub trait Endpoint: Send + Sync + Debug + Any {
     async fn process_request(
         &mut self,
         request: &[quiche::h3::Header],
-        conn: &Arc<Mutex<quiche::Connection>>,
-        socket: &Arc<UdpSocket>,
+        session: &ClientSession,
         stream_id: u64,
-        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError>;
 
     fn as_any(&self) -> &dyn Any;

@@ -7,7 +7,7 @@ use std::{fs::File, io::BufReader, path::PathBuf, sync::LazyLock};
 
 use serde::Deserialize;
 
-use crate::{Files, IpEndpoint, PsqError, UdpEndpoint};
+use crate::{Files, IpEndpoint, PsqError, PtyEndpoint, UdpEndpoint};
 
 use super::PsqServer;
 
@@ -68,14 +68,21 @@ enum Endpoint {
         addresspools: Vec<String>,
         routes: Vec<String>,
     },
+
     UdpEndpoint {
         #[serde(flatten)]
         common: Common,
     },
+
     Files {
         #[serde(flatten)]
         common: Common,
         root: String,
+    },
+
+    PtyEndpoint {
+        #[serde(flatten)]
+        common: Common,
     },
 }
 
@@ -171,6 +178,7 @@ impl Config {
                         .add_endpoint(&common.path, Box::new(ipendpoint))
                         .await;
                 }
+
                 Endpoint::UdpEndpoint { common } => {
                     debug!("Adding UdpEndpoint at '{}'", common.path);
                     let mut udpendpoint = UdpEndpoint::new();
@@ -181,6 +189,7 @@ impl Config {
                         .add_endpoint(&common.path, Box::new(udpendpoint))
                         .await;
                 }
+
                 Endpoint::Files { common, root } => {
                     debug!("Adding Files at '{}', root: '{}'", common.path, root);
                     let mut files = Files::new(root);
@@ -189,6 +198,17 @@ impl Config {
                     }
 
                     server.add_endpoint(&common.path, Box::new(files)).await;
+                }
+
+                Endpoint::PtyEndpoint { common } => {
+                    debug!("Adding PtyEndpoint at '{}'", common.path);
+                    let mut ptyendpoint = PtyEndpoint::new();
+                    if let Some(permission) = &common.permission {
+                        ptyendpoint.require_permission(permission);
+                    }
+                    server
+                        .add_endpoint(&common.path, Box::new(ptyendpoint))
+                        .await;
                 }
             }
         }

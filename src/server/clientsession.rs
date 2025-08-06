@@ -8,6 +8,7 @@ use tokio::{
     sync::{watch, Mutex},
     time::Duration,
 };
+use url::form_urlencoded;
 
 use super::*;
 use crate::{
@@ -18,15 +19,16 @@ use crate::{
 };
 
 /// One client session at the server.
-pub(crate) struct ClientSession {
+pub struct ClientSession {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
-    http3_conn: Option<quiche::h3::Connection>,
+    http3_conn: Option<Arc<Mutex<quiche::h3::Connection>>>,
     partial_responses: HashMap<u64, PartialResponse>,
     timeout_tx: watch::Sender<Option<Duration>>,
     streams: HashMap<u64, Box<dyn PsqStream>>,
     endpoints: Arc<Mutex<Endpoints>>,
     jwt_secret: Vec<u8>,
+    query_params: HashMap<u64, HashMap<String, String>>,
 }
 
 impl ClientSession {
@@ -46,6 +48,7 @@ impl ClientSession {
             streams: HashMap::new(),
             endpoints: Arc::clone(endpoints),
             jwt_secret: jwt_secret.to_vec(),
+            query_params: HashMap::new(),
         }
     }
 
@@ -53,7 +56,7 @@ impl ClientSession {
         &self.conn
     }
 
-    pub(crate) fn h3_connection(&self) -> &Option<quiche::h3::Connection> {
+    pub(crate) fn h3_connection(&self) -> &Option<Arc<Mutex<quiche::h3::Connection>>> {
         &self.http3_conn
     }
 
@@ -91,7 +94,7 @@ impl ClientSession {
             };
 
             // TODO: sanity check h3 connection before adding to map
-            self.http3_conn = Some(h3_conn);
+            self.http3_conn = Some(Arc::new(Mutex::new(h3_conn)));
         }
 
         let mut buf = [0; 10000]; // TODO: change proper size
@@ -141,11 +144,26 @@ impl ClientSession {
                 }
 
                 Ok((stream_id, quiche::h3::Event::Data)) => {
-                    info!(
-                        "{} got data on stream id {}",
-                        self.conn.lock().await.trace_id(),
-                        stream_id
-                    );
+                    let conn = &mut self.conn.lock().await;
+                    info!("{} got data on stream id {}", conn.trace_id(), stream_id);
+
+                    if let Some(stream) = self.streams.get_mut(&stream_id) {
+                        let mut buf = [0u8; 10000];
+                        while let Ok(read) = self
+                            .http3_conn
+                            .as_mut()
+                            .unwrap()
+                            .lock()
+                            .await
+                            .recv_body(conn, stream_id, &mut buf)
+                        {
+                            if let Err(e) = stream.process_data(&buf[..read]).await {
+                                error!("Error processing stream data: {}", e);
+                            }
+                        }
+                    } else {
+                        warn!("Data received for unknown stream ID: {}", stream_id);
+                    }
                 }
 
                 Ok((stream_id, quiche::h3::Event::Finished)) => {
@@ -175,6 +193,18 @@ impl ClientSession {
         }
     }
 
+    pub(crate) fn jwt_secret(&self) -> &Vec<u8> {
+        &self.jwt_secret
+    }
+
+    pub(crate) fn socket(&self) -> &Arc<UdpSocket> {
+        &self.socket
+    }
+
+    pub(crate) fn get_query_params(&self, stream_id: u64) -> Option<&HashMap<String, String>> {
+        self.query_params.get(&stream_id)
+    }
+
     /// Handles incoming HTTP/3 requests.
     async fn handle_request(&mut self, stream_id: u64, headers: &[quiche::h3::Header]) {
         info!(
@@ -187,7 +217,7 @@ impl ClientSession {
         let (headers, body, fin) = self.build_response(stream_id, headers).await;
 
         let conn = &mut self.conn.lock().await;
-        let http3_conn = &mut self.http3_conn.as_mut().unwrap();
+        let http3_conn = &mut self.http3_conn.as_mut().unwrap().lock().await;
         match http3_conn.send_response(conn, stream_id, &headers, false) {
             Ok(v) => v,
 
@@ -232,7 +262,12 @@ impl ClientSession {
 
     async fn poll_helper(&mut self) -> Result<(u64, quiche::h3::Event), quiche::h3::Error> {
         let mut conn = &mut *self.conn.lock().await;
-        self.http3_conn.as_mut().unwrap().poll(&mut conn)
+        self.http3_conn
+            .as_mut()
+            .unwrap()
+            .lock()
+            .await
+            .poll(&mut conn)
     }
 
     async fn set_timeout(&self) {
@@ -245,7 +280,7 @@ impl ClientSession {
         let conn = &mut self.conn.lock().await;
 
         for stream_id in conn.writable() {
-            let http3_conn = &mut self.http3_conn.as_mut().unwrap();
+            let http3_conn = &mut self.http3_conn.as_mut().unwrap().lock().await;
 
             if !self.partial_responses.contains_key(&stream_id) {
                 return;
@@ -293,13 +328,25 @@ impl ClientSession {
         }
     }
 
+    fn split_path_and_query(path: &str) -> (String, HashMap<String, String>) {
+        let mut parts = path.splitn(2, '?');
+        let clean_path = parts.next().unwrap_or("").to_string();
+        let mut map = HashMap::new();
+        if let Some(q) = parts.next() {
+            for (k, v) in form_urlencoded::parse(q.as_bytes()) {
+                map.insert(k.into_owned(), v.into_owned());
+            }
+        }
+        (clean_path, map)
+    }
+
     /// Builds an HTTP/3 response given a request.
     async fn build_response(
         &mut self,
         stream_id: u64,
         request: &[quiche::h3::Header],
     ) -> (Vec<quiche::h3::Header>, Vec<u8>, bool) {
-        let mut path = std::path::Path::new("");
+        let mut path: std::path::PathBuf = std::path::PathBuf::new();
 
         // Look for the request's path and method.
         for hdr in request {
@@ -310,7 +357,11 @@ impl ClientSession {
                         warn!("Invalid path");
                         return build_h3_response(400, "Invalid path!");
                     }
-                    path = std::path::Path::new(s.unwrap())
+                    let full = s.unwrap();
+                    let (clean, qmap) = ClientSession::split_path_and_query(full);
+                    // Store per-stream query params so endpoints can retrieve them via session reference.
+                    self.query_params.insert(stream_id, qmap);
+                    path = std::path::PathBuf::from(clean);
                 }
                 _ => (),
             }
@@ -323,39 +374,31 @@ impl ClientSession {
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
         match self.endpoints.lock().await.get_mut(&string) {
             Some(endpoint) => {
-                let (status, body, fin) = match endpoint
-                    .process_request(
-                        request,
-                        &self.conn,
-                        &self.socket,
-                        stream_id,
-                        &self.jwt_secret,
-                    )
-                    .await
-                {
-                    Ok((stream, body)) => {
-                        if stream.is_some() {
-                            // In some cases we do not create a new stream,
-                            // if the stream can be fully served right away.
-                            self.streams.insert(stream_id, stream.unwrap());
+                let (status, body, fin) =
+                    match endpoint.process_request(request, &self, stream_id).await {
+                        Ok((stream, body)) => {
+                            if stream.is_some() {
+                                // In some cases we do not create a new stream,
+                                // if the stream can be fully served right away.
+                                self.streams.insert(stream_id, stream.unwrap());
+                            }
+                            (200, body, false)
                         }
-                        (200, body, false)
-                    }
-                    Err(PsqError::HttpResponse(status, body)) => {
-                        warn!("Http Response with error {}: {}", status, body);
-                        (status, body.as_bytes().to_vec(), true)
-                    }
-                    Err(e) => {
-                        error!("Error processing request: {}", e);
-                        (
-                            500,
-                            format!("Error processing request: {}", e)
-                                .as_bytes()
-                                .to_vec(),
-                            true,
-                        )
-                    }
-                };
+                        Err(PsqError::HttpResponse(status, body)) => {
+                            warn!("Http Response with error {}: {}", status, body);
+                            (status, body.as_bytes().to_vec(), true)
+                        }
+                        Err(e) => {
+                            error!("Error processing request: {}", e);
+                            (
+                                500,
+                                format!("Error processing request: {}", e)
+                                    .as_bytes()
+                                    .to_vec(),
+                                true,
+                            )
+                        }
+                    };
                 (build_h3_resp_headers(status, &body), body, fin)
             }
             None => {
@@ -375,6 +418,7 @@ impl ClientSession {
             warn!("Could not send shutdown message: {}", e);
         }
         self.streams.remove(&stream_id);
+        self.query_params.remove(&stream_id);
     }
 }
 

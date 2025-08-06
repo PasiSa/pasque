@@ -21,6 +21,11 @@
             "permission": "regular",
             "type": "Files",
             "root": "."
+        },
+        {
+            "path": "pty",
+            "permission": "terminal",
+            "type": "PtyEndpoint"
         }
     ]
 }

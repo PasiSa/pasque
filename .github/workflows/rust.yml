@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Rustfmt
+      run: cargo fmt --check
     - name: Build
       run: cargo test --no-run --features tuntest
     - name: Run tests as sudo

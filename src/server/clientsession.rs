@@ -1,9 +1,6 @@
 //! One server-side session to a client
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use quiche::h3::NameValue;
 use tokio::{
@@ -14,18 +11,14 @@ use tokio::{
 
 use super::*;
 use crate::{
-    PsqError,
     server::Endpoints,
-    stream::{
-        process_h3_datagram,
-        PsqStream,
-    },
+    stream::{process_h3_datagram, PsqStream},
     util::hdrs_to_strings,
+    PsqError,
 };
 
-
 /// One client session at the server.
-pub (crate) struct ClientSession {
+pub(crate) struct ClientSession {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
     http3_conn: Option<quiche::h3::Connection>,
@@ -37,7 +30,7 @@ pub (crate) struct ClientSession {
 }
 
 impl ClientSession {
-    pub (crate) fn new(
+    pub(crate) fn new(
         socket: &Arc<UdpSocket>,
         conn: quiche::Connection,
         timeout_tx: watch::Sender<Option<Duration>>,
@@ -56,17 +49,15 @@ impl ClientSession {
         }
     }
 
-
-    pub (crate) fn connection(&self) -> &Arc<Mutex<quiche::Connection>> {
+    pub(crate) fn connection(&self) -> &Arc<Mutex<quiche::Connection>> {
         &self.conn
     }
 
-
-    pub (crate) fn h3_connection(&self) -> &Option<quiche::h3::Connection> {
+    pub(crate) fn h3_connection(&self) -> &Option<quiche::h3::Connection> {
         &self.http3_conn
     }
 
-    pub (crate) async fn process_data(&mut self, pkt_buf: &mut [u8], recv_info: quiche::RecvInfo) {
+    pub(crate) async fn process_data(&mut self, pkt_buf: &mut [u8], recv_info: quiche::RecvInfo) {
         self.set_timeout().await;
 
         let mut conn = self.conn.lock().await;
@@ -77,14 +68,12 @@ impl ClientSession {
             Err(e) => {
                 error!("{} recv failed: {:?}", conn.trace_id(), e);
                 return;
-            },
+            }
         };
 
         // Create a new HTTP/3 connection as soon as the QUIC connection
         // is established.
-        if (conn.is_in_early_data() || conn.is_established()) &&
-            self.http3_conn.is_none()
-        {
+        if (conn.is_in_early_data() || conn.is_established()) && self.http3_conn.is_none() {
             debug!(
                 "{} QUIC handshake completed, now trying HTTP/3",
                 conn.trace_id()
@@ -92,23 +81,20 @@ impl ClientSession {
 
             let mut h3_config = quiche::h3::Config::new().unwrap();
             h3_config.enable_extended_connect(true);
-            let h3_conn = match quiche::h3::Connection::with_transport(
-                &mut conn,
-                &h3_config,
-            ) {
+            let h3_conn = match quiche::h3::Connection::with_transport(&mut conn, &h3_config) {
                 Ok(v) => v,
 
                 Err(e) => {
                     error!("failed to create HTTP/3 connection: {}", e);
                     return;
-                },
+                }
             };
 
             // TODO: sanity check h3 connection before adding to map
             self.http3_conn = Some(h3_conn);
         }
 
-        let mut buf = [0; 10000];  // TODO: change proper size
+        let mut buf = [0; 10000]; // TODO: change proper size
         match conn.dgram_recv(&mut buf) {
             Ok(n) => {
                 //debug!("Datagram received, {} bytes", n);
@@ -117,7 +103,7 @@ impl ClientSession {
                     Err(e) => {
                         error!("Error processing HTTP/3 capsule: {}", e);
                         return;
-                    },
+                    }
                 };
 
                 let stream = self.streams.get_mut(&stream_id);
@@ -128,36 +114,31 @@ impl ClientSession {
                         warn!("Error with received datagram: {}", e);
                     }
                 }
-            },
+            }
             Err(e) => {
                 if e != quiche::Error::Done {
                     error!("Error receiving datagram: {}", e);
                 }
-            },
+            }
         }
     }
 
-
-    pub (crate) async fn send_packets(&self) {
+    pub(crate) async fn send_packets(&self) {
         if let Err(e) = send_quic_packets(&self.conn, &self.socket).await {
             error!("Error sending packets: {}", e);
             // TODO: Close client connection
         }
     }
 
-
-    pub (crate) async fn handle_h3_requests(&mut self) {
+    pub(crate) async fn handle_h3_requests(&mut self) {
         self.handle_writable().await;
 
         // Process HTTP/3 events.
         loop {
             match self.poll_helper().await {
-                Ok((
-                    stream_id,
-                    quiche::h3::Event::Headers { list, .. },
-                )) => {
+                Ok((stream_id, quiche::h3::Event::Headers { list, .. })) => {
                     self.handle_request(stream_id, &list).await;
-                },
+                }
 
                 Ok((stream_id, quiche::h3::Event::Data)) => {
                     info!(
@@ -165,47 +146,37 @@ impl ClientSession {
                         self.conn.lock().await.trace_id(),
                         stream_id
                     );
-                },
+                }
 
                 Ok((stream_id, quiche::h3::Event::Finished)) => {
                     info!("Stream {} closed", stream_id);
                     self.remove_stream(stream_id).await;
-                },
+                }
 
                 Ok((stream_id, quiche::h3::Event::Reset(e))) => {
                     error!("Stream {} was reset: {}", stream_id, e);
                     self.remove_stream(stream_id).await;
-                },
+                }
 
-                Ok((
-                    _prioritized_element_id,
-                    quiche::h3::Event::PriorityUpdate,
-                )) => (),
+                Ok((_prioritized_element_id, quiche::h3::Event::PriorityUpdate)) => (),
 
                 Ok((_goaway_id, quiche::h3::Event::GoAway)) => (),
 
                 Err(quiche::h3::Error::Done) => {
                     break;
-                },
+                }
 
                 Err(e) => {
-                    error!(
-                        "{} HTTP/3 error {:?}",
-                        self.conn.lock().await.trace_id(),
-                        e
-                    );
+                    error!("{} HTTP/3 error {:?}", self.conn.lock().await.trace_id(), e);
 
                     break;
-                },
+                }
             }
         }
     }
 
-
     /// Handles incoming HTTP/3 requests.
-    async fn handle_request(
-        &mut self, stream_id: u64, headers: &[quiche::h3::Header],
-    ) {
+    async fn handle_request(&mut self, stream_id: u64, headers: &[quiche::h3::Header]) {
         info!(
             "{} got request {:?} on stream id {}",
             self.conn.lock().await.trace_id(),
@@ -229,12 +200,12 @@ impl ClientSession {
 
                 self.partial_responses.insert(stream_id, response);
                 return;
-            },
+            }
 
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
                 return;
-            },
+            }
         }
 
         let written = match http3_conn.send_body(conn, stream_id, &body, fin) {
@@ -245,7 +216,7 @@ impl ClientSession {
             Err(e) => {
                 error!("{} stream send failed {:?}", conn.trace_id(), e);
                 return;
-            },
+            }
         };
 
         if written < body.len() {
@@ -259,12 +230,10 @@ impl ClientSession {
         }
     }
 
-
     async fn poll_helper(&mut self) -> Result<(u64, quiche::h3::Event), quiche::h3::Error> {
         let mut conn = &mut *self.conn.lock().await;
         self.http3_conn.as_mut().unwrap().poll(&mut conn)
     }
-
 
     async fn set_timeout(&self) {
         let new_duration = self.conn.lock().await.timeout();
@@ -290,12 +259,12 @@ impl ClientSession {
 
                     Err(quiche::h3::Error::StreamBlocked) => {
                         return;
-                    },
+                    }
 
                     Err(e) => {
                         error!("{} stream send failed {:?}", conn.trace_id(), e);
                         return;
-                    },
+                    }
                 }
             }
 
@@ -313,7 +282,7 @@ impl ClientSession {
 
                     error!("{} stream send failed {:?}", conn.trace_id(), e);
                     return;
-                },
+                }
             };
 
             resp.written += written;
@@ -324,14 +293,12 @@ impl ClientSession {
         }
     }
 
-
     /// Builds an HTTP/3 response given a request.
     async fn build_response(
         &mut self,
         stream_id: u64,
         request: &[quiche::h3::Header],
     ) -> (Vec<quiche::h3::Header>, Vec<u8>, bool) {
-
         let mut path = std::path::Path::new("");
 
         // Look for the request's path and method.
@@ -341,28 +308,31 @@ impl ClientSession {
                     let s = std::str::from_utf8(hdr.value());
                     if s.is_err() {
                         warn!("Invalid path");
-                        return build_h3_response(400, "Invalid path!")
+                        return build_h3_response(400, "Invalid path!");
                     }
                     path = std::path::Path::new(s.unwrap())
-                },
+                }
                 _ => (),
             }
         }
 
         let ep = path.components().nth(1);
         if ep.is_none() {
-            return build_h3_response(404, "Not Found (empty path)")
+            return build_h3_response(404, "Not Found (empty path)");
         }
         let string = ep.unwrap().as_os_str().to_string_lossy().to_string();
         match self.endpoints.lock().await.get_mut(&string) {
             Some(endpoint) => {
-                let (status, body, fin) = match endpoint.process_request(
+                let (status, body, fin) = match endpoint
+                    .process_request(
                         request,
                         &self.conn,
                         &self.socket,
                         stream_id,
                         &self.jwt_secret,
-                ).await {
+                    )
+                    .await
+                {
                     Ok((stream, body)) => {
                         if stream.is_some() {
                             // In some cases we do not create a new stream,
@@ -370,34 +340,43 @@ impl ClientSession {
                             self.streams.insert(stream_id, stream.unwrap());
                         }
                         (200, body, false)
-                    },
+                    }
                     Err(PsqError::HttpResponse(status, body)) => {
                         warn!("Http Response with error {}: {}", status, body);
                         (status, body.as_bytes().to_vec(), true)
-                    },
+                    }
                     Err(e) => {
                         error!("Error processing request: {}", e);
-                        (500, format!("Error processing request: {}", e).as_bytes().to_vec(), true)
-                    },
+                        (
+                            500,
+                            format!("Error processing request: {}", e)
+                                .as_bytes()
+                                .to_vec(),
+                            true,
+                        )
+                    }
                 };
                 (build_h3_resp_headers(status, &body), body, fin)
             }
             None => {
                 let body = format!("Not Found: {}", string).as_bytes().to_vec();
                 (build_h3_resp_headers(404, &body), body, true)
-                }
+            }
         }
     }
 
-
     async fn remove_stream(&mut self, stream_id: u64) {
-        if let Err(e) = self.conn.lock().await.stream_shutdown(stream_id, quiche::Shutdown::Read, 0) {
+        if let Err(e) = self
+            .conn
+            .lock()
+            .await
+            .stream_shutdown(stream_id, quiche::Shutdown::Read, 0)
+        {
             warn!("Could not send shutdown message: {}", e);
         }
         self.streams.remove(&stream_id);
     }
 }
-
 
 struct PartialResponse {
     headers: Option<Vec<quiche::h3::Header>>,

@@ -4,11 +4,7 @@ extern crate log;
 use clap::Parser;
 use std::net::SocketAddr;
 
-use pasque::{
-    PsqServer,
-    server::Config,
-};
-
+use pasque::{server::Config, PsqServer};
 
 #[tokio::main]
 async fn main() {
@@ -27,10 +23,7 @@ async fn main() {
         }
     };
 
-    let mut psqserver = PsqServer::start(
-        &args.address(),
-        &config,
-    ).await.unwrap();
+    let mut psqserver = PsqServer::start(&args.address(), &config).await.unwrap();
 
     loop {
         if let Err(e) = psqserver.process().await {
@@ -38,7 +31,6 @@ async fn main() {
         }
     }
 }
-
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -51,7 +43,6 @@ pub struct Args {
     #[arg(short, long, default_value = "src/bin/server-example.json")]
     config: String,
 }
-
 
 impl Args {
     pub fn new() -> Args {

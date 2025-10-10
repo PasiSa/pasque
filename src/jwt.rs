@@ -1,18 +1,10 @@
-use chrono::{Utc, Duration};
+use chrono::{Duration, Utc};
 use jsonwebtoken::{
-    decode,
-    encode,
-    Algorithm,
-    DecodingKey,
-    EncodingKey,
-    Header,
-    TokenData,
-    Validation,
+    decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::PsqError;
-
 
 /// Claims and functions to operate a JSON Web Tokens in Pasque.
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,16 +16,15 @@ pub struct Jwt {
 }
 
 impl Jwt {
-
     /// Create a JSON web token.
-    /// 
+    ///
     /// `sub` is the JWT subject, typically a user ID. `duration` defines when
     /// the token expires. Expiry time is "now" + `duration`. `permissions` tell
     /// what the token is good for: each Pasque endpoint may define a permission
     /// string that is required in the client token to allow a stream to the
     /// endpoint. `secret` is the shared secret used to encode and decode the
     /// token.
-    /// 
+    ///
     /// Returns the token that can be included in the HTTP Authorization header.
     pub fn create_token(
         sub: String,
@@ -56,18 +47,13 @@ impl Jwt {
         Ok(token)
     }
 
-
     /// Verify a JSON web token.
-    /// 
+    ///
     /// `secret` is the shared secret used to verify the token. Also expiry time
-    /// is verified. Returns the claims in the token, if verification succeeds. 
+    /// is verified. Returns the claims in the token, if verification succeeds.
     pub fn verify_token(token: &str, secret: &[u8]) -> Result<TokenData<Jwt>, PsqError> {
         let validation = Validation::new(Algorithm::HS256);
-        let token_data = decode::<Jwt>(
-            token,
-            &DecodingKey::from_secret(secret),
-            &validation,
-        )?;
+        let token_data = decode::<Jwt>(token, &DecodingKey::from_secret(secret), &validation)?;
         Ok(token_data)
     }
 
@@ -76,7 +62,6 @@ impl Jwt {
         self.permissions.contains(permission)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -92,7 +77,8 @@ mod tests {
             Duration::seconds(120),
             vec!["read".to_string()],
             SECRET,
-        ).expect("failed to create token");
+        )
+        .expect("failed to create token");
 
         let result = Jwt::verify_token(&token, SECRET);
         let claims = result.unwrap().claims;
@@ -107,7 +93,8 @@ mod tests {
             Duration::seconds(-120),
             vec!["write".to_string()],
             SECRET,
-        ).expect("failed to create token");
+        )
+        .expect("failed to create token");
 
         let result = Jwt::verify_token(&token, SECRET);
         assert!(result.is_err(), "Expected token to be expired");
@@ -126,7 +113,8 @@ mod tests {
             Duration::seconds(120),
             vec!["invalid".to_string(), "other".to_string()],
             SECRET,
-        ).expect("failed to create token");
+        )
+        .expect("failed to create token");
 
         let result = Jwt::verify_token(&token, SECRET);
         let claims = result.unwrap().claims;

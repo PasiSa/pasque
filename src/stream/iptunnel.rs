@@ -7,19 +7,15 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 use futures::{
-    FutureExt,
     sink::SinkExt,
     stream::{SplitSink, StreamExt},
+    FutureExt,
 };
 use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
 use octets::Octets;
-use tokio::{
-    io::AsyncWriteExt,
-    net::UdpSocket,
-    sync::Mutex, task::JoinHandle,
-};
+use tokio::{io::AsyncWriteExt, net::UdpSocket, sync::Mutex, task::JoinHandle};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 use tun::AsyncDevice;
 
@@ -28,17 +24,14 @@ use crate::{
     client::PsqClient,
     platform::{self, get_os_networking},
     server::Endpoint,
-    util::{
-        send_quic_packets, 
-    },
+    util::send_quic_packets,
     PsqError,
 };
-
 
 /// IP tunnel over HTTP/3 connection.
 /// Tunnel is associated with an HTTP/3 stream established with
 /// CONNECT request.
-/// 
+///
 /// See [RFC 9484](https://datatracker.ietf.org/doc/html/rfc9484) for more information.
 pub struct IpTunnel {
     stream_id: u64,
@@ -52,14 +45,13 @@ pub struct IpTunnel {
 }
 
 impl IpTunnel {
-
     /// Connect a new IP tunnel using given HTTP/3 connection, as indicated with
-    /// `pconn`. 
-    /// 
+    /// `pconn`.
+    ///
     /// Sends an HTTP/3 CONNECT request, and if successful, returns the created
     /// IpTunnel object in response that can be used for further tunnel/proxy
     /// operations. Blocks until response to the CONNECT request is processed.
-    /// 
+    ///
     /// `urlstr` is URL path of the IP proxy endpoint at server. It is appended
     /// to the base URL used when establishing connection.
     pub async fn connect<'a>(
@@ -67,34 +59,28 @@ impl IpTunnel {
         urlstr: &str,
         ifname: &str,
     ) -> Result<&'a IpTunnel, PsqError> {
-
         let url = pconn.get_url().join(urlstr)?;
-        let stream_id = start_connection(
-            pconn,
-            &url,
-            "connect-ip",
-        ).await?;
+        let stream_id = start_connection(pconn, &url, "connect-ip").await?;
 
         // Blocks until request is replied and tunnel is set up
-        let ret = pconn.add_stream(
-            stream_id,
-            Box::new(IpTunnel {
+        let ret = pconn
+            .add_stream(
                 stream_id,
-                tunwriter: None,
-                ifname: ifname.to_string(),
-                tuntask: None,
-                addresses: Vec::new(),
-                teststream: None,
-             })
-        ).await;
+                Box::new(IpTunnel {
+                    stream_id,
+                    tunwriter: None,
+                    ifname: ifname.to_string(),
+                    tuntask: None,
+                    addresses: Vec::new(),
+                    teststream: None,
+                }),
+            )
+            .await;
         match ret {
-            Ok(stream) => {
-                Ok(IpTunnel::get_from_dyn(stream))
-            },
-            Err(e) => Err(e)
+            Ok(stream) => Ok(IpTunnel::get_from_dyn(stream)),
+            Err(e) => Err(e),
         }
     }
-
 
     /// Create a new IPtunnel for given stream_id and interface name.
     /// Typically used on the server side of the connection.
@@ -106,7 +92,6 @@ impl IpTunnel {
         ifname: &str,
         teststream: Option<tokio::net::UnixStream>,
     ) -> Result<IpTunnel, PsqError> {
-
         Ok(IpTunnel {
             stream_id,
             tunwriter: None,
@@ -114,26 +99,24 @@ impl IpTunnel {
             tuntask: None,
             addresses: Vec::new(),
             teststream,
-         })
+        })
     }
-
 
     pub fn addresses(&self) -> &Vec<IpAddr> {
         &self.addresses
     }
 
-
     async fn setup_tun_dev(
         &mut self,
         origconn: &Arc<Mutex<quiche::Connection>>,
-        origsocket: &Arc::<UdpSocket>,
+        origsocket: &Arc<UdpSocket>,
     ) -> Result<(), PsqError> {
         let conn = Arc::clone(origconn);
         let socket = Arc::clone(origsocket);
 
         let mut config = tun::Configuration::default();
         config
-            .tun_name(&self.ifname)   // Interface name
+            .tun_name(&self.ifname) // Interface name
             .mtu(1300)
             .up(); // Bring interface up
 
@@ -158,7 +141,6 @@ impl IpTunnel {
         }));
         Ok(())
     }
-
 
     fn check_task_error(&mut self) -> Option<PsqError> {
         if let Some(handle) = &mut self.tuntask {
@@ -190,7 +172,6 @@ impl IpTunnel {
         }
     }
 
-
     /// Add ADDRESS_ASSIGN capsule to the given buffer. Return the size of
     /// capsule in bytes, or error.
     fn address_assign_capsule(
@@ -198,24 +179,23 @@ impl IpTunnel {
         buf: &mut Vec<u8>,
         addresses: Vec<IpAddr>,
     ) -> Result<usize, PsqError> {
-
         let mut octets = octets::OctetsMut::with_slice(buf.as_mut_slice());
 
         octets.put_varint_with_len(Capsule::AddressAssign as u64, 1)?;
-        octets.put_varint_with_len(0, 2)?;  // will be set in the end
+        octets.put_varint_with_len(0, 2)?; // will be set in the end
 
         for addr in addresses {
-            octets.put_varint_with_len(0, 1)?;  // Request ID == 0
+            octets.put_varint_with_len(0, 1)?; // Request ID == 0
             match addr {
                 IpAddr::V4(v4) => {
                     octets.put_u8(4)?; // IP version = 4
                     octets.put_bytes(&v4.octets())?;
-                    octets.put_u8(32)?;  // prefix
+                    octets.put_u8(32)?; // prefix
                 }
                 IpAddr::V6(v6) => {
                     octets.put_u8(6)?; // IP version = 6
                     octets.put_bytes(&v6.octets())?;
-                    octets.put_u8(128)?;  // prefix
+                    octets.put_u8(128)?; // prefix
                 }
             }
         }
@@ -229,34 +209,30 @@ impl IpTunnel {
         Ok(len)
     }
 
-
     fn route_advertisement_capsule(
         &self,
         dstbuf: &mut Vec<u8>,
         offset: usize,
         srcbuf: &Vec<u8>,
     ) -> Result<usize, PsqError> {
-
         // TODO: this function should be reimplemented with the new zero-copy methods
         if srcbuf.len() <= 3 {
             // No addresses to advertise
-            return Ok(0)
+            return Ok(0);
         }
         let len = srcbuf.len();
         let mut octets = octets::OctetsMut::with_slice(&mut dstbuf[offset..]);
 
         octets.put_varint_with_len(Capsule::RouteAdvertisement as u64, 1)?;
         octets.put_varint_with_len(len as u64, 2)?;
-        octets.put_bytes(&srcbuf)?;  // TODO: should apply zero-copy bufs instead
+        octets.put_bytes(&srcbuf)?; // TODO: should apply zero-copy bufs instead
 
         Ok(octets.off())
     }
 
-
     fn get_from_dyn(stream: &Box<dyn PsqStream>) -> &IpTunnel {
         stream.as_any().downcast_ref::<IpTunnel>().unwrap()
     }
-
 
     fn packet_output(buf: &[u8], bytes_read: usize) -> String {
         match buf[0] >> 4 {
@@ -268,14 +244,15 @@ impl IpTunnel {
                     "IPv4: bytes: {}; Len: {}; Dest: {}.{}.{}.{}; Proto: {}; ",
                     bytes_read,
                     u16::from_be_bytes([buf[2], buf[3]]),
-                    buf[16],buf[17],buf[18],buf[19],
+                    buf[16],
+                    buf[17],
+                    buf[18],
+                    buf[19],
                     buf[9],
                 );
                 if buf.len() >= 28 && (buf[9] == 6 || buf[9] == 17) {
-                    output = output + &format!(
-                        "Dest port: {}",
-                        u16::from_be_bytes([buf[22], buf[23]])
-                    );
+                    output =
+                        output + &format!("Dest port: {}", u16::from_be_bytes([buf[22], buf[23]]));
                 }
                 output
             }
@@ -292,17 +269,14 @@ impl IpTunnel {
                     buf[6],
                 );
                 if buf.len() >= 48 && (buf[6] == 6 || buf[6] == 17) {
-                    output = output + &format!(
-                        "Dest port: {}",
-                        u16::from_be_bytes([buf[42], buf[43]])
-                    );
+                    output =
+                        output + &format!("Dest port: {}", u16::from_be_bytes([buf[42], buf[43]]));
                 }
                 output
             }
             _ => format!("Unknown IP version"),
         }
     }
-
 
     /// Process one capsule at given buffer. Both IPv4 and IPv6 are supported,
     /// although the `tun` crate does not currently support IPv6.
@@ -316,43 +290,49 @@ impl IpTunnel {
         debug!("Processing capsule type: {:02x}, length: {}", captype, len);
 
         if len + 2 > buf.len() as u64 {
-            return Err(PsqError::H3Capsule("Truncated capsule received".to_string()))
+            return Err(PsqError::H3Capsule(
+                "Truncated capsule received".to_string(),
+            ));
         }
 
         let offset = match Capsule::try_from(captype) {
-            Ok(Capsule::AddressAssign) => {
-                self.process_address_assign(&mut octets, len)?
-            },
+            Ok(Capsule::AddressAssign) => self.process_address_assign(&mut octets, len)?,
             Ok(Capsule::RouteAdvertisement) => {
                 self.process_route_advertisement(&mut octets, len)?
-            },
+            }
             Err(_) => {
-                warn!("Ignoring unknown capsule type: {:02x}, length: {}", captype, len);
+                warn!(
+                    "Ignoring unknown capsule type: {:02x}, length: {}",
+                    captype, len
+                );
                 octets.skip(len as usize)?;
                 octets.off()
-            },
+            }
         };
         Ok(offset)
     }
 
-
     fn octets_to_ipv4(octets: &mut Octets) -> Result<Ipv4Addr, PsqError> {
         Ok(std::net::Ipv4Addr::new(
-            octets.get_u8()?, octets.get_u8()?,
-            octets.get_u8()?, octets.get_u8()?,
+            octets.get_u8()?,
+            octets.get_u8()?,
+            octets.get_u8()?,
+            octets.get_u8()?,
         ))
     }
-
 
     fn octets_to_ipv6(octets: &mut Octets) -> Result<Ipv6Addr, PsqError> {
         Ok(std::net::Ipv6Addr::new(
-            octets.get_u16()?, octets.get_u16()?,
-            octets.get_u16()?, octets.get_u16()?,
-            octets.get_u16()?, octets.get_u16()?,
-            octets.get_u16()?, octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
+            octets.get_u16()?,
         ))
     }
-
 
     fn ipv4_range_to_cidr(start: Ipv4Addr, end: Ipv4Addr) -> Option<String> {
         let start = u32::from(start);
@@ -371,17 +351,16 @@ impl IpTunnel {
                 return match Ipv4Network::new(Ipv4Addr::from(network), prefix) {
                     Ok(ip) => Some(ip.to_string()),
                     Err(_) => None,
-                }
+                };
             }
         }
         None
     }
 
-
     fn ipv6_range_to_cidr(start: Ipv6Addr, end: Ipv6Addr) -> Option<String> {
         let start = u128::from(start);
         let end = u128::from(end);
-    
+
         for prefix in (0..=128).rev() {
             let mask = if prefix == 0 {
                 0
@@ -395,53 +374,51 @@ impl IpTunnel {
                 return match Ipv6Network::new(Ipv6Addr::from(network), prefix) {
                     Ok(ip) => Some(ip.to_string()),
                     Err(_) => None,
-                }
+                };
             }
         }
         None
     }
 
-
-    fn process_address_assign(
-        &mut self,
-        octets: &mut Octets,
-        len: u64,
-    ) -> Result<usize, PsqError> {
-
+    fn process_address_assign(&mut self, octets: &mut Octets, len: u64) -> Result<usize, PsqError> {
         let mut remaining = len as usize;
         while remaining >= 7 {
             let offset = octets.off();
-            octets.get_varint()?;  // Request ID is ignored for now
-            
+            octets.get_varint()?; // Request ID is ignored for now
+
             let networking = platform::get_os_networking();
             let ipver = octets.get_u8()?;
             match ipver {
                 4 => {
                     let v4 = Self::octets_to_ipv4(octets)?;
-                    let _prefix = octets.get_u8()?;  // no use for prefix for now
+                    let _prefix = octets.get_u8()?; // no use for prefix for now
                     networking.add_address(v4.to_string().as_str(), &self.ifname)?;
                     self.addresses.push(IpAddr::V4(v4));
                     remaining -= octets.off() - offset;
-                },
+                }
                 6 => {
                     let v6 = Self::octets_to_ipv6(octets)?;
                     let _prefix = octets.get_u8()?;
                     networking.add_address(v6.to_string().as_str(), &self.ifname)?;
                     self.addresses.push(IpAddr::V6(v6));
                     remaining -= octets.off() - offset;
-                },
+                }
                 n => {
-                    return Err(PsqError::H3Capsule(format!("Address assign: Invalid IP version: {}", n)))
+                    return Err(PsqError::H3Capsule(format!(
+                        "Address assign: Invalid IP version: {}",
+                        n
+                    )))
                 }
             };
         }
         if remaining > 0 {
-            Err(PsqError::H3Capsule("Invalid length in Address Assign capsule".to_string()))
+            Err(PsqError::H3Capsule(
+                "Invalid length in Address Assign capsule".to_string(),
+            ))
         } else {
             Ok(octets.off())
         }
     }
-
 
     fn process_route_advertisement(
         &mut self,
@@ -458,41 +435,41 @@ impl IpTunnel {
                     // TODO: check that end_ip >= start_ip
                     let start_ip = Self::octets_to_ipv4(octets)?;
                     let end_ip = Self::octets_to_ipv4(octets)?;
-                    let _proto = octets.get_u8()?;  // For the time being protocol is ignored
+                    let _proto = octets.get_u8()?; // For the time being protocol is ignored
                     remaining -= 10;
 
                     if let Some(destination) = Self::ipv4_range_to_cidr(start_ip, end_ip) {
                         networking.add_route(destination.as_str(), &self.ifname)?;
                     } else {
-                        return Err(PsqError::Custom(
-                            format!(
-                                "Route advertisement: Invalid IPv6 address range: {} - {}",
-                                start_ip.to_string(), end_ip.to_string()
-                            )
-                        ))
+                        return Err(PsqError::Custom(format!(
+                            "Route advertisement: Invalid IPv6 address range: {} - {}",
+                            start_ip.to_string(),
+                            end_ip.to_string()
+                        )));
                     }
-                },
+                }
                 6 => {
                     // TODO: check that end_ip >= start_ip
                     let start_ip = Self::octets_to_ipv6(octets)?;
                     let end_ip = Self::octets_to_ipv6(octets)?;
-                    let _proto = octets.get_u8()?;  // For the time being protocol is ignored
+                    let _proto = octets.get_u8()?; // For the time being protocol is ignored
                     remaining -= 34;
 
                     if let Some(destination) = Self::ipv6_range_to_cidr(start_ip, end_ip) {
                         networking.add_route(destination.as_str(), &self.ifname)?;
                     } else {
-                        return Err(PsqError::Custom(
-                            format!(
-                                "Route advertisement: Invalid IPv6 address range: {} - {}",
-                                start_ip.to_string(), end_ip.to_string()
-                            )
-                        ))
+                        return Err(PsqError::Custom(format!(
+                            "Route advertisement: Invalid IPv6 address range: {} - {}",
+                            start_ip.to_string(),
+                            end_ip.to_string()
+                        )));
                     }
-                    
-                },
+                }
                 n => {
-                    return Err(PsqError::H3Capsule(format!("Route advertisement: Invalid IP version: {}", n)))
+                    return Err(PsqError::H3Capsule(format!(
+                        "Route advertisement: Invalid IP version: {}",
+                        n
+                    )))
                 }
             };
         }
@@ -500,14 +477,13 @@ impl IpTunnel {
     }
 }
 
-
 #[async_trait]
 impl PsqStream for IpTunnel {
     async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError> {
         // check if Tokio reader task is still running
         if let Some(e) = self.check_task_error() {
             error!("IP tunnel reader task failed: {}", e);
-            return Err(e)
+            return Err(e);
         }
 
         if self.tunwriter.is_some() {
@@ -522,7 +498,12 @@ impl PsqStream for IpTunnel {
             // This is just for testing so no smart checks here.
             // We don't bother to write to teststream anything below
             // 20 bytes, because obviously it is not an IP header.
-            self.teststream.as_mut().unwrap().write_all(&buf[..]).await.unwrap();
+            self.teststream
+                .as_mut()
+                .unwrap()
+                .write_all(&buf[..])
+                .await
+                .unwrap();
         }
 
         Ok(())
@@ -532,21 +513,18 @@ impl PsqStream for IpTunnel {
         self
     }
 
-
     fn is_ready(&self) -> bool {
         self.tunwriter.is_some()
     }
-
 
     fn process_h3_headers(
         &mut self,
         _conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
-         _list: &Vec<Header>,
+        _list: &Vec<Header>,
     ) -> Result<(), PsqError> {
         Ok(())
     }
-
 
     async fn process_h3_data(
         &mut self,
@@ -556,9 +534,7 @@ impl PsqStream for IpTunnel {
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
         let c = &mut *conn.lock().await;
-        while let Ok(read) =
-            h3_conn.recv_body(c, self.stream_id, buf)
-        {
+        while let Ok(read) = h3_conn.recv_body(c, self.stream_id, buf) {
             debug!(
                 "got {} bytes of response data on stream {}",
                 read, self.stream_id
@@ -577,7 +553,6 @@ impl PsqStream for IpTunnel {
         Ok(())
     }
 
-
     fn stream_id(&self) -> u64 {
         self.stream_id
     }
@@ -594,7 +569,6 @@ impl Drop for IpTunnel {
 
 unsafe impl Send for IpTunnel {}
 unsafe impl Sync for IpTunnel {}
-
 
 pub struct IpPacketCodec;
 
@@ -620,16 +594,15 @@ impl Encoder<BytesMut> for IpPacketCodec {
     }
 }
 
-
 /// Server endpoint for IP tunnel over HTTP/3 (see [RFC
 /// 9484](https://datatracker.ietf.org/doc/html/rfc9484)).
-/// 
+///
 /// IP endpoint can be given one or more address pools from which it assigns
 /// IPv4 or IPv6 addresses to the connecting clients. It can also be assigned
 /// routes that are advertised to clients.
-/// 
+///
 /// Here is an example of IP endpoint with address pool and routes:
-/// 
+///
 /// ```no_run
 /// use pasque::{server::Config, PsqServer, IpEndpoint};
 /// use std::net::SocketAddr;
@@ -646,7 +619,7 @@ impl Encoder<BytesMut> for IpPacketCodec {
 ///     ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
 ///     ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
 ///     ip_endpoint.add_route("::/0".parse().unwrap()).unwrap();
-/// 
+///
 ///     psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
 /// }
 /// ```
@@ -674,22 +647,18 @@ pub struct IpEndpoint {
 }
 
 impl IpEndpoint {
-
     /// Create a new IP tunnel endpoint.
-    /// 
+    ///
     /// `local_addr` is the IP address and network prefix length at the server
     /// side of the end point. When new client requests
     /// come in, they are assigned an IP address from this network prefix.
-    /// 
+    ///
     /// `ifprefix` is the prefix for network interface identifier for a TUN
     /// interface. For each new established tunnel server assigns a new
     /// interface based on this identifier. For example, if `ifprefix` is
     /// `tun-s0`, then the individual interfaces are `tun-s0-i0`, `tun-s0-i1`,
     /// and so on.
-    pub fn new(
-        ifprexix: &str,
-    ) -> IpEndpoint {
-
+    pub fn new(ifprexix: &str) -> IpEndpoint {
         IpEndpoint {
             ifprefix: ifprexix.to_string(),
             tuncount: 0,
@@ -700,15 +669,10 @@ impl IpEndpoint {
         }
     }
 
-
     /// Advertise route via the tunnel for IP addresses indicated by the
     /// network prefix. This can be called for multiple different address
     /// ranges for the same endpoint. Works only on Linux for the time being.
-    pub fn add_route(
-        &mut self,
-        prefix: IpNetwork,
-    ) -> Result<(), PsqError> {
-
+    pub fn add_route(&mut self, prefix: IpNetwork) -> Result<(), PsqError> {
         let addrlen = match prefix {
             IpNetwork::V4(_) => 4,
             IpNetwork::V6(_) => 16,
@@ -723,24 +687,23 @@ impl IpEndpoint {
         match prefix {
             IpNetwork::V4(prefix) => {
                 let start = prefix.nth(0).unwrap();
-                let end = prefix.nth(prefix.size()-1).unwrap();
+                let end = prefix.nth(prefix.size() - 1).unwrap();
                 octets.put_u8(4)?; // IP version = 4
                 octets.put_bytes(&start.octets())?;
                 octets.put_bytes(&end.octets())?;
-                octets.put_u8(0)?;  // all protocols allowed
+                octets.put_u8(0)?; // all protocols allowed
             }
             IpNetwork::V6(prefix) => {
                 let start = prefix.nth(0).unwrap();
-                let end = prefix.nth(prefix.size()-1).unwrap();
+                let end = prefix.nth(prefix.size() - 1).unwrap();
                 octets.put_u8(6)?; // IP version = 6
                 octets.put_bytes(&start.octets())?;
                 octets.put_bytes(&end.octets())?;
-                octets.put_u8(0)?;  // all protocols allowed
+                octets.put_u8(0)?; // all protocols allowed
             }
         };
         Ok(())
     }
-
 
     /// Add a new address pool from which addresses to clients are allocated.
     /// An endpoint can have multiple address pools, in which case client is
@@ -754,13 +717,9 @@ impl IpEndpoint {
     /// If incoming request does not have JWT token, or the token does not
     /// include this permission label in its claims, the request is rejected as
     /// unauthorized.
-    pub fn require_permission(
-        &mut self,
-        permission: &String,
-    ) {
+    pub fn require_permission(&mut self, permission: &String) {
         self.permission = Some(permission.to_string());
     }
-
 
     #[cfg(all(test, feature = "tuntest"))]
     fn add_teststream(&mut self, stream: tokio::net::UnixStream) {
@@ -778,18 +737,18 @@ impl Endpoint for IpEndpoint {
         stream_id: u64,
         jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
-
         let mut authorized = self.permission.is_none();
         for hdr in request {
             check_common_headers(hdr, "connect-ip")?;
-            authorized = authorized ||
-                check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+            authorized =
+                authorized || check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
         }
 
         if !authorized {
-            return Err(
-                PsqError::HttpResponse(401, "Authorization required".to_string())
-            )
+            return Err(PsqError::HttpResponse(
+                401,
+                "Authorization required".to_string(),
+            ));
         }
 
         debug!("Starting IP tunnel");
@@ -798,18 +757,15 @@ impl Endpoint for IpEndpoint {
         let mut iptunnel = Box::new(IpTunnel::new(
             stream_id,
             &tunif,
-            self.teststream.take(),  // First client will have the teststream
+            self.teststream.take(), // First client will have the teststream
         )?);
 
-        if let Err(e) = iptunnel.setup_tun_dev(
-            &conn,
-            &socket,
-        ).await {
+        if let Err(e) = iptunnel.setup_tun_dev(&conn, &socket).await {
             error!("Could not create TUN interface: {}", e);
             return Err(PsqError::HttpResponse(
                 503,
                 "Count not create TUN interface".to_string(),
-            ))
+            ));
         }
 
         // Add local addresses, and routes to remote end of tunnel
@@ -826,11 +782,13 @@ impl Endpoint for IpEndpoint {
 
         // TODO: This should be implemented with new Quiche zero-copy methods
         let mut body = Vec::<u8>::with_capacity(256);
-        unsafe { body.set_len(256); }
+        unsafe {
+            body.set_len(256);
+        }
         let len_aacap = iptunnel.address_assign_capsule(&mut body, addresses)?;
 
-        let len_racap = iptunnel.route_advertisement_capsule(
-            &mut body, len_aacap, &self.route_adv)?;
+        let len_racap =
+            iptunnel.route_advertisement_capsule(&mut body, len_aacap, &self.route_adv)?;
 
         body.truncate(len_aacap + len_racap);
 
@@ -853,7 +811,6 @@ impl fmt::Debug for IpEndpoint {
     }
 }
 
-
 /// For keeping track of available addresses.
 struct AddressPool {
     prefix: IpNetwork,
@@ -875,7 +832,9 @@ impl AddressPool {
 
     fn add(&mut self, addr: IpAddr) -> Result<(), PsqError> {
         if !self.prefix.contains(addr) {
-            return Err(PsqError::Custom("AddressPool: address not in range".to_string()))
+            return Err(PsqError::Custom(
+                "AddressPool: address not in range".to_string(),
+            ));
         }
         match self.used.contains(&addr) {
             true => Err(PsqError::Custom("AddressPool: already in use".to_string())),
@@ -904,7 +863,9 @@ impl AddressPool {
             IpNetwork::V6(v6) => v6.size() as u128,
         };
         if self.used.len() as u128 >= size - 1 {
-            return Err(PsqError::Custom("AddressPool: no addresses available".to_string()))
+            return Err(PsqError::Custom(
+                "AddressPool: no addresses available".to_string(),
+            ));
         }
         loop {
             let addr = self.nth(self.next as usize).unwrap();
@@ -919,7 +880,6 @@ impl AddressPool {
     }
 }
 
-
 #[cfg(all(test, feature = "tuntest"))]
 mod tests {
     use std::net::SocketAddr;
@@ -927,10 +887,10 @@ mod tests {
 
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     use crate::{
-        server::{PsqServer, config::Config},
+        server::{config::Config, PsqServer},
         stream::filestream::FileStream,
         test_utils::init_logger,
     };
@@ -945,42 +905,41 @@ mod tests {
 
         let server = tokio::spawn(async move {
             let config = Config::create_default();
-            let mut psqserver = PsqServer::start(
-                &vec![SocketAddr::from_str(addr).unwrap()],
-                &config,
-            ).await.unwrap();
-            let mut ip_endpoint = IpEndpoint::new(
-                "tun-s",
-            );
-            ip_endpoint.add_addresspool("10.76.0.1/24".parse().unwrap()).unwrap();
-            ip_endpoint.add_route("1.1.1.0/24".parse().unwrap()).unwrap();
+            let mut psqserver =
+                PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
+                    .await
+                    .unwrap();
+            let mut ip_endpoint = IpEndpoint::new("tun-s");
+            ip_endpoint
+                .add_addresspool("10.76.0.1/24".parse().unwrap())
+                .unwrap();
+            ip_endpoint
+                .add_route("1.1.1.0/24".parse().unwrap())
+                .unwrap();
             ip_endpoint.add_teststream(tunnel);
 
-            ip_endpoint.add_addresspool("fd76:0212:dead::1/48".parse().unwrap()).unwrap();
-            ip_endpoint.add_route("fd76:0212:dead::/48".parse().unwrap()).unwrap();
+            ip_endpoint
+                .add_addresspool("fd76:0212:dead::1/48".parse().unwrap())
+                .unwrap();
+            ip_endpoint
+                .add_route("fd76:0212:dead::/48".parse().unwrap())
+                .unwrap();
             psqserver.add_endpoint("ip", Box::new(ip_endpoint)).await;
             loop {
                 psqserver.process().await.unwrap();
             }
-
         });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Run client
         let client1 = tokio::spawn(async move {
-
-            let mut psqconn = PsqClient::connect(
-                format!("https://{}/", addr).as_str(),
-                true,
-            ).await.unwrap();
+            let mut psqconn = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+                .await
+                .unwrap();
 
             // Test first with GET which should not be supported on IP tunnel.
-            let ret = FileStream::get(
-                &mut psqconn,
-                "ip",
-                "testout",
-            ).await;
+            let ret = FileStream::get(&mut psqconn, "ip", "testout").await;
             assert!(matches!(ret, Err(PsqError::HttpResponse(405, _))));
 
             // Start valid tunnel
@@ -994,10 +953,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client2 = tokio::spawn(async move {
-            let mut psqconn = PsqClient::connect(
-                format!("https://{}/", addr).as_str(),
-                true,
-            ).await.unwrap();
+            let mut psqconn = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+                .await
+                .unwrap();
             add_client(&mut psqconn, "tun-c2", "10.76.0.3", None).await;
         });
 
@@ -1009,11 +967,9 @@ mod tests {
             let mut buf = vec![0u8; 2000];
             loop {
                 let n = tester.read(&mut buf).await.unwrap();
-                debug!("packet output: {}", IpTunnel::packet_output(
-                    &buf[..n],
-                    n,
-                ));
-                if buf[9] != 128 {  // ignore non-IP packets
+                debug!("packet output: {}", IpTunnel::packet_output(&buf[..n], n,));
+                if buf[9] != 128 {
+                    // ignore non-IP packets
                     assert!(
                         u16::from_be_bytes([buf[2], buf[3]]) == 33,
                         "Invalid IPv4 packet length"
@@ -1024,42 +980,38 @@ mod tests {
                         "IPv4: Invalid destination port"
                     );
                     assert!(
-                        buf[16] == 1 &&
-                        buf[17] == 1 &&
-                        buf[18] == 1 &&
-                        buf[19] == 100,
+                        buf[16] == 1 && buf[17] == 1 && buf[18] == 1 && buf[19] == 100,
                         "Invalid IPv4 address",
                     );
                     break;
                 }
             }
-        }).await;
+        })
+        .await;
         assert!(result.is_ok(), "Test timed out");
 
         // Test sending IPv6 over tunnel
         let result = timeout(Duration::from_millis(500), async {
             let socket = UdpSocket::bind("[fd76:0212:dead::2]:20002").await.unwrap();
-            socket.send_to(b"Hello", "[fd76:0212:dead::100]:20003").await.unwrap();
+            socket
+                .send_to(b"Hello", "[fd76:0212:dead::100]:20003")
+                .await
+                .unwrap();
 
             let mut buf = vec![0u8; 2000];
             let n = tester.read(&mut buf).await.unwrap();
-            debug!("packet output: {}", IpTunnel::packet_output(
-                &buf[..n],
-                n,
-            ));
+            debug!("packet output: {}", IpTunnel::packet_output(&buf[..n], n,));
             assert!(
                 u16::from_be_bytes([buf[4], buf[5]]) == 13,
                 "Invalid IPv6 payload length"
             );
             assert!(buf[6] == 17, "IPv6: Invalid next header");
             assert!(
-                buf[24] == 0xfd &&
-                buf[25] == 0x76 &&
-                buf[26] == 0x02 &&
-                buf[27] == 0x12,
+                buf[24] == 0xfd && buf[25] == 0x76 && buf[26] == 0x02 && buf[27] == 0x12,
                 "Invalid IPv6 address",
             );
-        }).await;
+        })
+        .await;
         assert!(result.is_ok(), "Test timed out");
 
         client1.abort();
@@ -1067,26 +1019,16 @@ mod tests {
         server.abort();
     }
 
-
     async fn add_client(
         pconn: &mut PsqClient,
         ifname: &str,
         addr: &str,
         tunnel: Option<UnixStream>,
     ) {
-
-        let iptunnel = connect_test(
-            pconn,
-            "ip",
-            ifname,
-            tunnel,
-        ).await.unwrap();
+        let iptunnel = connect_test(pconn, "ip", ifname, tunnel).await.unwrap();
 
         let expect_ad = *iptunnel.addresses().first().unwrap();
-        assert_eq!(
-            expect_ad,
-            addr.parse::<std::net::IpAddr>().unwrap(),
-        );
+        assert_eq!(expect_ad, addr.parse::<std::net::IpAddr>().unwrap(),);
     }
 
     async fn connect_test<'a>(
@@ -1095,31 +1037,26 @@ mod tests {
         ifname: &str,
         teststream: Option<tokio::net::UnixStream>,
     ) -> Result<&'a IpTunnel, PsqError> {
-
         let url = pconn.get_url().join(urlstr)?;
-        let stream_id = start_connection(
-            pconn,
-            &url,
-            "connect-ip",
-        ).await?;
+        let stream_id = start_connection(pconn, &url, "connect-ip").await?;
 
         // Blocks until request is replied and tunnel is set up
-        let ret = pconn.add_stream(
-            stream_id,
-            Box::new(IpTunnel {
+        let ret = pconn
+            .add_stream(
                 stream_id,
-                tunwriter: None,
-                ifname: ifname.to_string(),
-                tuntask: None,
-                addresses: Vec::new(),
-                teststream,
-             })
-        ).await;
+                Box::new(IpTunnel {
+                    stream_id,
+                    tunwriter: None,
+                    ifname: ifname.to_string(),
+                    tuntask: None,
+                    addresses: Vec::new(),
+                    teststream,
+                }),
+            )
+            .await;
         match ret {
-            Ok(stream) => {
-                Ok(IpTunnel::get_from_dyn(stream))
-            },
-            Err(e) => Err(e)
+            Ok(stream) => Ok(IpTunnel::get_from_dyn(stream)),
+            Err(e) => Err(e),
         }
     }
 }

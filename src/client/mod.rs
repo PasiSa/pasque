@@ -300,7 +300,10 @@ impl PsqClient {
                                             format!("{}", String::from_utf8_lossy(&buf[..n]),),
                                         ));
                                     } else {
-                                        return Err(PsqError::HttpResponse(status, "-".to_string()));
+                                        return Err(PsqError::HttpResponse(
+                                            status,
+                                            "-".to_string(),
+                                        ));
                                     }
                                 }
                                 stream

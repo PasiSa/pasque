@@ -1,31 +1,20 @@
 //! The client and server side logic for different types of tunnel endpoints
-//! 
+//!
 //! In addition to MASQUE tunnels based on CONNECT, there is a simple endpoint
 //! for sharing files. Designed to be generic based on [PsqStream] trait that
 //! represents one kind of tunnel between client and server.
 
-use std::{
-    any::Any,
-    sync::Arc,
-};
+use std::{any::Any, sync::Arc};
 
 use async_trait::async_trait;
 use quiche::h3::{Header, NameValue};
-use tokio::{
-    net::UdpSocket,
-    sync::Mutex,
-};
+use tokio::{net::UdpSocket, sync::Mutex};
 
 use crate::{
-    client::PsqClient,
-    jwt::Jwt,
-    PsqError,
-    VERSION_IDENTIFICATION,
-    util::MAX_DATAGRAM_SIZE,
+    client::PsqClient, jwt::Jwt, util::MAX_DATAGRAM_SIZE, PsqError, VERSION_IDENTIFICATION,
 };
 
-
-pub (crate) enum Capsule {
+pub(crate) enum Capsule {
     AddressAssign = 0x01,
     RouteAdvertisement = 0x03,
 }
@@ -37,16 +26,17 @@ impl TryFrom<u64> for Capsule {
         match value {
             0x01 => Ok(Capsule::AddressAssign),
             0x03 => Ok(Capsule::RouteAdvertisement),
-            _ => Err(PsqError::H3Capsule(format!("Unknown capsule type: {}", value))),
+            _ => Err(PsqError::H3Capsule(format!(
+                "Unknown capsule type: {}",
+                value
+            ))),
         }
     }
 }
 
-
 #[async_trait]
 /// Base trait for different tunnel/proxy stream types.
 pub trait PsqStream: Any + Send + Sync {
-
     /// Process an incoming HTTP/3 datagram, content in `buf`.
     async fn process_datagram(&mut self, buf: &[u8]) -> Result<(), PsqError>;
 
@@ -56,9 +46,8 @@ pub trait PsqStream: Any + Send + Sync {
 
     fn as_any(&self) -> &dyn Any;
 
-
     /// Process headers from HTTP/3 response at the client.
-    /// 
+    ///
     /// Status is parsed already earlier. Only headers specific to the current
     /// type of stream should be processed. `list` contains incoming headers.
     fn process_h3_headers(
@@ -68,9 +57,8 @@ pub trait PsqStream: Any + Send + Sync {
         list: &Vec<Header>,
     ) -> Result<(), PsqError>;
 
-
     /// Process HTTP/3 response data following the headers at the client.
-    /// 
+    ///
     /// This is only called if the status code in response was 200 OK. In other
     /// cases, The calling function does the error processing.
     async fn process_h3_data(
@@ -81,13 +69,11 @@ pub trait PsqStream: Any + Send + Sync {
         buf: &mut [u8],
     ) -> Result<(), PsqError>;
 
-
     /// Stream ID of the CONNECT request that initiated this tunnel or proxy session.
-    /// 
+    ///
     /// The stream remains open until the tunnel is closed, as required by RFC.
     fn stream_id(&self) -> u64;
 }
-
 
 /// Build headers for HTTP/3 requests. If `method` is "CONNECT", `protocol`` needs
 /// to be specified. For other methods it can be empty string.
@@ -97,7 +83,6 @@ fn prepare_h3_request(
     url: &url::Url,
     token: &Option<String>,
 ) -> Vec<quiche::h3::Header> {
-
     let mut path = String::from(url.path());
 
     if let Some(query) = url.query() {
@@ -108,12 +93,12 @@ fn prepare_h3_request(
     let mut headers = vec![
         quiche::h3::Header::new(b":method", method.as_bytes()),
         quiche::h3::Header::new(b":scheme", url.scheme().as_bytes()),
-        quiche::h3::Header::new(
-            b":authority",
-            url.host_str().unwrap().as_bytes(),
-        ),
+        quiche::h3::Header::new(b":authority", url.host_str().unwrap().as_bytes()),
         quiche::h3::Header::new(b":path", path.as_bytes()),
-        quiche::h3::Header::new(b"user-agent", format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes()),
+        quiche::h3::Header::new(
+            b"user-agent",
+            format!("pasque/{}", VERSION_IDENTIFICATION).as_bytes(),
+        ),
         quiche::h3::Header::new(b"capsule-protocol", b"?1"),
     ];
     if !protocol.is_empty() {
@@ -127,62 +112,54 @@ fn prepare_h3_request(
     }
 
     headers
-
 }
-
 
 /// Currently accepts just HTTP/3 Datagram and returns just (stream_id, offset).
 /// Context ID and capsule length are ignored.
-pub (crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError>{
+pub(crate) fn process_h3_datagram(buf: &[u8]) -> Result<(u64, usize), PsqError> {
     let mut octets = octets::Octets::with_slice(buf);
 
     let stream_id: u64 = octets.get_varint()? * 4;
 
-    let _context_id = octets.get_varint()?;  // not in use at the moment
+    let _context_id = octets.get_varint()?; // not in use at the moment
 
     Ok((stream_id, octets.off()))
 }
 
-
 /// Validate request header assuming a CONNECT request, and check that
 /// `protocol` matches the header. Caller of the function calls it one
 /// at a time, for each header received.
-fn check_common_headers(
-    header: &quiche::h3::Header,
-    protocol: &str,
-) -> Result<(), PsqError> {
-
+fn check_common_headers(header: &quiche::h3::Header, protocol: &str) -> Result<(), PsqError> {
     match header.name() {
         b":method" => {
             if header.value() != b"CONNECT" {
                 return Err(PsqError::HttpResponse(
                     405,
                     "Only CONNECT method supported for this endpoint".to_string(),
-                ))
+                ));
             }
-        },
+        }
         b":protocol" => {
             if header.value() != protocol.as_bytes() {
                 return Err(PsqError::HttpResponse(
-                    406,  // what would be a proper status code?
+                    406, // what would be a proper status code?
                     format!("Only protocol '{}' supported at this endpoint", protocol),
-                ))
+                ));
             }
         }
         b"capsule-protocol" => {
             if header.value() != b"?1" {
                 return Err(PsqError::HttpResponse(
-                    406,  // what would be a proper status code?
+                    406, // what would be a proper status code?
                     "Unsupported capsule protocol".to_string(),
-                ))
+                ));
             }
         }
-        _ => {},
+        _ => {}
     }
 
     Ok(())
 }
-
 
 /// Check if this is "authorization" header, in that case validate the JWT token
 /// in header. `permission` is the required permission label that should be included
@@ -201,13 +178,11 @@ fn check_authorized(
                         info!("Received valid token: {:?}", token.claims);
                         return Ok(true);
                     } else {
-                        info!("Received token with insufficient permissions: {:?}",
+                        info!(
+                            "Received token with insufficient permissions: {:?}",
                             token.claims
                         );
-                        return Err(PsqError::HttpResponse(
-                            403,
-                            "Permission denied".to_string(),
-                        ));
+                        return Err(PsqError::HttpResponse(403, "Permission denied".to_string()));
                     }
                 }
                 Err(err) => {
@@ -223,32 +198,23 @@ fn check_authorized(
     Ok(false)
 }
 
-
 async fn start_connection<'a>(
     pconn: &'a mut PsqClient,
     url: &url::Url,
     protocol: &str,
 ) -> Result<u64, PsqError> {
-
     // TODO: unit test for unsupported protocol
-    let req = prepare_h3_request(
-        "CONNECT",
-        protocol,
-        &url,
-        pconn.token(),
-    );
+    let req = prepare_h3_request("CONNECT", protocol, &url, pconn.token());
     info!("sending HTTP request {:?}", req);
 
     let a = pconn.connection();
     let mut conn = a.lock().await;
     let h3_conn = pconn.h3_connection().as_mut().unwrap();
 
-    let stream_id = h3_conn
-        .send_request(&mut *conn, &req, false)?;
+    let stream_id = h3_conn.send_request(&mut *conn, &req, false)?;
 
     Ok(stream_id)
 }
-
 
 /// Sends one HTTP/3 Datagram Capsule.
 fn send_h3_dgram(
@@ -256,7 +222,6 @@ fn send_h3_dgram(
     stream_id: u64,
     buf: &[u8],
 ) -> Result<(), PsqError> {
-    
     // currently we limit to stream IDs of max 16383 * 4
     //let mut data: Vec<u8> = Vec::with_capacity(6 + buf.len());
     let mut data: [u8; MAX_DATAGRAM_SIZE] = [0; MAX_DATAGRAM_SIZE];
@@ -281,6 +246,6 @@ fn send_h3_dgram(
     Ok(())
 }
 
-pub mod iptunnel;
 pub mod filestream;
+pub mod iptunnel;
 pub mod udptunnel;

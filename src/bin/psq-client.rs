@@ -1,14 +1,9 @@
-
 #[macro_use]
 extern crate log;
 
 use clap::Parser;
 
-use pasque::{
-    PsqClient,
-    IpTunnel,
-    UdpTunnel,
-};
+use pasque::{IpTunnel, PsqClient, UdpTunnel};
 
 #[tokio::main]
 async fn main() {
@@ -18,10 +13,9 @@ async fn main() {
 
     // Create an HTTP/3 connection to URL given on
     // command line `-d` or `--dest` argument.
-    let mut psqconn = PsqClient::connect(
-        args.dest(),
-        args.ignore_cert(),
-    ).await.unwrap();
+    let mut psqconn = PsqClient::connect(args.dest(), args.ignore_cert())
+        .await
+        .unwrap();
 
     if let Some(token) = args.token() {
         psqconn.set_token(token.clone());
@@ -30,13 +24,10 @@ async fn main() {
     // Triggers a CONNECT request to "ip" endpoint at the server.
     // The call blocks until server has replied and tunnel is established.
     if args.ip() {
-        match IpTunnel::connect(&mut psqconn,
-            "ip",
-            "tun-c",
-        ).await {
+        match IpTunnel::connect(&mut psqconn, "ip", "tun-c").await {
             Ok(_iptunnel) => {
                 info!("IpTunnel set up");
-            },
+            }
             Err(e) => {
                 error!("Error connecting IpTunnel: {}", e);
                 return;
@@ -53,7 +44,9 @@ async fn main() {
         "127.0.0.1",
         9000,
         "127.0.0.1:0".parse().unwrap(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     println!(
         "UDP datagrams to {} are forwarded to HTTP tunnel.",
@@ -66,7 +59,6 @@ async fn main() {
         // Just repeat until an error occurs
     }
 }
-
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -92,7 +84,6 @@ pub struct Args {
     token: Option<String>,
 }
 
-
 impl Args {
     pub fn new() -> Args {
         let args = Args::parse();
@@ -105,7 +96,7 @@ impl Args {
     }
 
     pub fn dest(&self) -> &String {
-       &self.dest
+        &self.dest
     }
 
     pub fn ignore_cert(&self) -> bool {

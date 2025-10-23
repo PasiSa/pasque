@@ -1,24 +1,11 @@
-use std::{
-    net::SocketAddr,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
-use tokio::{
-    fs,
-    net::UdpSocket,
-    sync::Notify,
-    time::timeout,
-};
+use tokio::{fs, net::UdpSocket, sync::Notify, time::timeout};
 
 use pasque::{
     client::PsqClient,
     jwt::Jwt,
-    server::{
-        config::Config,
-        PsqServer
-    },
+    server::{config::Config, PsqServer},
     stream::{
         filestream::{FileStream, Files},
         udptunnel::{UdpEndpoint, UdpTunnel},
@@ -28,41 +15,33 @@ use pasque::{
     PsqError,
 };
 
-
 #[tokio::test]
 async fn test_get_request() {
     init_logger();
     let addr = "127.0.0.1:8888";
     let config = Config::create_default();
     let server = tokio::spawn(async move {
-        let mut psqserver = PsqServer::start(
-            &vec![SocketAddr::from_str(addr).unwrap()],
-            &config,
-        ).await.unwrap();
-        psqserver.add_endpoint(
-            "files", 
-            Box::new(Files::new("."))).await;
+        let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
+            .await
+            .unwrap();
+        psqserver
+            .add_endpoint("files", Box::new(Files::new(".")))
+            .await;
         loop {
             psqserver.process().await.unwrap();
         }
-
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Run client
-    let mut psqconn = PsqClient::connect(
-        format!("https://{}/", addr).as_str(),
-        true,
-    ).await.unwrap();
+    let mut psqconn = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+        .await
+        .unwrap();
 
     let tmpfile = tempfile::NamedTempFile::new().unwrap();
     let filestr = tmpfile.path().to_str().unwrap();
-    let ret = FileStream::get(
-        &mut psqconn,
-        "files/Cargo.toml",
-        filestr,
-    ).await;
+    let ret = FileStream::get(&mut psqconn, "files/Cargo.toml", filestr).await;
 
     assert!(ret.is_ok());
 
@@ -77,30 +56,29 @@ async fn test_get_request() {
         &mut psqconn,
         "files/nonexisting",
         tmpfile.path().to_str().unwrap(),
-    ).await;
+    )
+    .await;
     assert!(ret.is_err());
 
     let ret = FileStream::get(
         &mut psqconn,
         "nonexisting",
         tmpfile.path().to_str().unwrap(),
-    ).await;
+    )
+    .await;
     assert!(ret.is_err());
 
     server.abort();
 }
 
-
 async fn run_server(addr: &str, shutdown: Arc<Notify>) {
     let config = Config::create_default();
-    let mut psqserver = PsqServer::start(
-        &vec![SocketAddr::from_str(addr).unwrap()],
-        &config,
-    ).await.unwrap();
-    psqserver.add_endpoint(
-        "udp",
-        Box::new(UdpEndpoint::new()),
-    ).await;
+    let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
+        .await
+        .unwrap();
+    psqserver
+        .add_endpoint("udp", Box::new(UdpEndpoint::new()))
+        .await;
     loop {
         tokio::select! {
             _ = shutdown.notified() => {
@@ -112,7 +90,6 @@ async fn run_server(addr: &str, shutdown: Arc<Notify>) {
         }
     }
 }
-
 
 async fn run_client(mut psqclient: PsqClient, shutdown: Arc<Notify>) {
     loop {
@@ -126,7 +103,6 @@ async fn run_client(mut psqclient: PsqClient, shutdown: Arc<Notify>) {
         }
     }
 }
-
 
 async fn run_udpserver(udpsocket: UdpSocket, shutdown: Arc<Notify>) {
     loop {
@@ -143,7 +119,6 @@ async fn run_udpserver(udpsocket: UdpSocket, shutdown: Arc<Notify>) {
     }
 }
 
-
 #[tokio::test]
 async fn test_udp_tunnel() {
     init_logger();
@@ -154,18 +129,13 @@ async fn test_udp_tunnel() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Run client
-    let mut psqclient = PsqClient::connect(
-        format!("https://{}/", addr).as_str(),
-        true,
-    ).await.unwrap();
+    let mut psqclient = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+        .await
+        .unwrap();
 
     // Test first with GET which should not be supported on UDP tunnel.
     let tmpfile = tempfile::NamedTempFile::new().unwrap();
-    let ret = FileStream::get(
-        &mut psqclient,
-        "udp",
-        tmpfile.path().to_str().unwrap(),
-    ).await;
+    let ret = FileStream::get(&mut psqclient, "udp", tmpfile.path().to_str().unwrap()).await;
     assert!(matches!(ret, Err(PsqError::HttpResponse(405, _))));
 
     let udptunnel = UdpTunnel::connect(
@@ -174,9 +144,11 @@ async fn test_udp_tunnel() {
         "127.0.0.1",
         9002,
         "127.0.0.1:0".parse().unwrap(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
     let tunneladdr = udptunnel.sockaddr().unwrap();
-    
+
     let client_notify = Arc::new(Notify::new());
     let client = tokio::spawn(run_client(psqclient, client_notify.clone()));
 
@@ -195,7 +167,8 @@ async fn test_udp_tunnel() {
         udpclient.send_to(b"Testing", tunneladdr).await.unwrap();
         let (n, _) = udpclient.recv_from(&mut buf).await.unwrap();
         assert_eq!(&buf[..n], b"Testing");
-    }).await;
+    })
+    .await;
     assert!(result.is_ok(), "Test timed out");
 
     udpserver_notify.notify_one();
@@ -208,34 +181,29 @@ async fn test_udp_tunnel() {
     server.await.unwrap();
 }
 
-
 #[tokio::test]
 async fn tunnel_closing() {
     init_logger();
     let addr = "127.0.0.1:9003";
     let server = tokio::spawn(async move {
         let config = Config::create_default();
-        let mut psqserver = PsqServer::start(
-            &vec![SocketAddr::from_str(addr).unwrap()],
-            &config,
-        ).await.unwrap();
-        psqserver.add_endpoint(
-            "udp",
-            Box::new(UdpEndpoint::new()),
-        ).await;
+        let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
+            .await
+            .unwrap();
+        psqserver
+            .add_endpoint("udp", Box::new(UdpEndpoint::new()))
+            .await;
         loop {
             psqserver.process().await.unwrap();
         }
-
     });
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Run client
-    let mut psqconn = PsqClient::connect(
-        format!("https://{}/", addr).as_str(),
-        true,
-    ).await.unwrap();
+    let mut psqconn = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+        .await
+        .unwrap();
 
     let _result = timeout(Duration::from_millis(1000), async {
         let udptunnel = UdpTunnel::connect(
@@ -244,7 +212,9 @@ async fn tunnel_closing() {
             "127.0.0.1",
             9004,
             "127.0.0.1:0".parse().unwrap(),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         let tunneladdr = udptunnel.sockaddr().unwrap();
         let stream_id = udptunnel.stream_id();
 
@@ -262,20 +232,13 @@ async fn tunnel_closing() {
         psqconn.process().await.unwrap();
         psqconn.remove_stream(stream_id).await;
         client1.abort();
-    }).await;
+    })
+    .await;
     server.abort();
 }
 
-
-async fn run_server_from_config(
-    addresses: Vec<SocketAddr>,
-    config: Config,
-    shutdown: Arc<Notify>,
-) {
-    let mut psqserver = PsqServer::start(
-        &addresses,
-        &config,
-    ).await.unwrap();
+async fn run_server_from_config(addresses: Vec<SocketAddr>, config: Config, shutdown: Arc<Notify>) {
+    let mut psqserver = PsqServer::start(&addresses, &config).await.unwrap();
     loop {
         tokio::select! {
             _ = shutdown.notified() => {
@@ -288,7 +251,6 @@ async fn run_server_from_config(
     }
 }
 
-
 #[tokio::test]
 async fn multiple_server_addresses() {
     let addresses = vec![
@@ -298,15 +260,16 @@ async fn multiple_server_addresses() {
     ];
     let server_notify = Arc::new(Notify::new());
     let config = Config::read_from_file("tests/endpoints.json").unwrap();
-    let server = tokio::spawn(
-        run_server_from_config(addresses.clone(), config, server_notify.clone())
-    );
+    let server = tokio::spawn(run_server_from_config(
+        addresses.clone(),
+        config,
+        server_notify.clone(),
+    ));
 
     for addr in addresses {
-        let mut psqclient = PsqClient::connect(
-            format!("https://{}/", addr).as_str(),
-            true,
-        ).await.unwrap();
+        let mut psqclient = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+            .await
+            .unwrap();
 
         let _udptunnel = UdpTunnel::connect(
             &mut psqclient,
@@ -314,12 +277,13 @@ async fn multiple_server_addresses() {
             "127.0.0.1",
             9002,
             "127.0.0.1:0".parse().unwrap(),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
     }
 
     server.abort();
 }
-
 
 #[tokio::test]
 async fn authorization_success() {
@@ -327,21 +291,18 @@ async fn authorization_success() {
     let addr = "127.0.0.1:7001";
     let server_notify = Arc::new(Notify::new());
     let config = Config::read_from_file("tests/endpoints_auth.json").unwrap();
-    let server = tokio::spawn(
-        run_server_from_config(
-            vec![SocketAddr::from_str(addr).unwrap()],
-            config,
-            server_notify.clone(),
-        )
-    );
+    let server = tokio::spawn(run_server_from_config(
+        vec![SocketAddr::from_str(addr).unwrap()],
+        config,
+        server_notify.clone(),
+    ));
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Run client
-    let mut psqclient = PsqClient::connect(
-        format!("https://{}/", addr).as_str(),
-        true,
-    ).await.unwrap();
+    let mut psqclient = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+        .await
+        .unwrap();
 
     let secret = "very-secret".as_bytes();
     let token = Jwt::create_token(
@@ -349,7 +310,8 @@ async fn authorization_success() {
         chrono::Duration::seconds(120),
         vec!["udpauth".to_string(), "filesauth".to_string()],
         secret,
-    ).unwrap();
+    )
+    .unwrap();
     psqclient.set_token(token);
 
     let tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -357,7 +319,8 @@ async fn authorization_success() {
         &mut psqclient,
         "files/Cargo.toml",
         tmpfile.path().to_str().unwrap(),
-    ).await;
+    )
+    .await;
     assert!(ret.is_ok());
 
     let _udptunnel = UdpTunnel::connect(
@@ -366,32 +329,31 @@ async fn authorization_success() {
         "127.0.0.1",
         9002,
         "127.0.0.1:0".parse().unwrap(),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     server.abort();
 }
 
 #[tokio::test]
 async fn authorization_failing() {
-init_logger();
+    init_logger();
     let addr = "127.0.0.1:7002";
     let server_notify = Arc::new(Notify::new());
     let config = Config::read_from_file("tests/endpoints_auth.json").unwrap();
-    let server = tokio::spawn(
-        run_server_from_config(
-            vec![SocketAddr::from_str(addr).unwrap()],
-            config,
-            server_notify.clone(),
-        )
-    );
+    let server = tokio::spawn(run_server_from_config(
+        vec![SocketAddr::from_str(addr).unwrap()],
+        config,
+        server_notify.clone(),
+    ));
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Test client without authorization token
-    let mut psqclient = PsqClient::connect(
-        format!("https://{}/", addr).as_str(),
-        true,
-    ).await.unwrap();
+    let mut psqclient = PsqClient::connect(format!("https://{}/", addr).as_str(), true)
+        .await
+        .unwrap();
 
     let ret = UdpTunnel::connect(
         &mut psqclient,
@@ -399,11 +361,11 @@ init_logger();
         "127.0.0.1",
         9002,
         "127.0.0.1:0".parse().unwrap(),
-    ).await.err().unwrap();
-    assert!(matches!(
-        ret,
-        PsqError::HttpResponse(401, _)
-    ));
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(ret, PsqError::HttpResponse(401, _)));
 
     // Test client with invalid permissions
     let secret = "very-secret".as_bytes();
@@ -412,7 +374,8 @@ init_logger();
         chrono::Duration::seconds(120),
         vec!["invalid".to_string()],
         secret,
-    ).unwrap();
+    )
+    .unwrap();
     psqclient.set_token(token);
 
     let ret = UdpTunnel::connect(
@@ -421,11 +384,11 @@ init_logger();
         "127.0.0.1",
         9002,
         "127.0.0.1:0".parse().unwrap(),
-    ).await.err().unwrap();
-    assert!(matches!(
-        ret,
-        PsqError::HttpResponse(403, _)
-    ));
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(ret, PsqError::HttpResponse(403, _)));
 
     server.abort();
 }

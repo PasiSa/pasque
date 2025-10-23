@@ -4,7 +4,6 @@ use pasque::jwt::Jwt;
 use std::fs;
 use std::process;
 
-
 fn main() {
     let args = Args::parse();
 
@@ -16,13 +15,14 @@ fn main() {
         }
     };
 
-    let permissions: Vec<String> = args
-        .permissions
-        .split(',')
-        .map(str::to_string)
-        .collect();
+    let permissions: Vec<String> = args.permissions.split(',').map(str::to_string).collect();
 
-    match Jwt::create_token(args.sub, Duration::minutes(args.lifetime), permissions, &secret) {
+    match Jwt::create_token(
+        args.sub,
+        Duration::minutes(args.lifetime),
+        permissions,
+        &secret,
+    ) {
         Ok(token) => println!("{}", token),
         Err(e) => {
             eprintln!("Failed to create token: {}", e);
@@ -30,7 +30,6 @@ fn main() {
         }
     }
 }
-
 
 #[derive(Parser, Debug)]
 #[command(about = "Generate a JWT token", long_about = None)]

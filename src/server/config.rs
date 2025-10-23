@@ -1,30 +1,21 @@
 //! Server side configuration settings
-//! 
+//!
 //! Typically read from a JSON file. Includes certificate parameters and
 //! configurations for different kinds of endpoints.
 
-use std::{
-    fs::File,
-    io::BufReader,
-};
+use std::{fs::File, io::BufReader};
 
 use serde::Deserialize;
 
-use crate::{
-    Files,
-    IpEndpoint,
-    PsqError,
-    UdpEndpoint,
-};
+use crate::{Files, IpEndpoint, PsqError, UdpEndpoint};
 
 use super::PsqServer;
 
-
 /// Configuration for server certificate and endpoint settings.
-/// 
+///
 /// See [server-example.json] for an example on how different types of endpoints
 /// are configured and what fields they have.
-/// 
+///
 /// [server-example.json]: https://github.com/PasiSa/pasque/blob/main/src/bin/server-example.json
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -38,7 +29,6 @@ pub struct Config {
 fn default_jwt_secret() -> String {
     "not-secret".to_string()
 }
-
 
 /// Common attributes to different endpoint types.
 #[derive(Debug, Deserialize)]
@@ -73,29 +63,33 @@ enum Endpoint {
 }
 
 impl Config {
-
     /// Read JSON-formatted configuration from given configuration file
     pub fn read_from_file(filename: &str) -> core::result::Result<Config, PsqError> {
         let file = match File::open(filename) {
             Ok(f) => f,
-            Err(e) => return Err(
-                PsqError::Custom(format!("Could not open config file: {}", e))
-            ),
+            Err(e) => {
+                return Err(PsqError::Custom(format!(
+                    "Could not open config file: {}",
+                    e
+                )))
+            }
         };
         let reader = BufReader::new(file);
         let conf: Config = match serde_json::from_reader(reader) {
             Ok(c) => c,
-            Err(e) => return Err(
-                PsqError::Custom(format!("Could not parse config file: {}", e))
-            ),
+            Err(e) => {
+                return Err(PsqError::Custom(format!(
+                    "Could not parse config file: {}",
+                    e
+                )))
+            }
         };
         Ok(conf)
     }
 
-
     /// Create a default configuration. Can be applied if configuration file cannot be read.
     pub fn create_default() -> Config {
-        Config{
+        Config {
             cert_file: "src/bin/cert.crt".to_string(),
             key_file: "src/bin/cert.key".to_string(),
             jwt_secret: "not-secret".to_string(),
@@ -107,7 +101,6 @@ impl Config {
     pub fn cert_file(&self) -> &String {
         &self.cert_file
     }
-
 
     /// File for private key to check the certificate.
     pub fn key_file(&self) -> &String {
@@ -122,13 +115,21 @@ impl Config {
     /// Apply server endpoint settings from configuration.
     /// See [server-example.json] for an example configuration
     /// with endpoints.
-    /// 
+    ///
     /// [server-example.json]: https://github.com/PasiSa/pasque/blob/main/src/bin/server-example.json
     pub async fn set_server_endpoints(&self, server: &mut PsqServer) -> Result<(), PsqError> {
         for endpoint in &self.endpoints {
             match endpoint {
-                Endpoint::IpEndpoint { common, ifprefix, addresspools, routes } => {
-                    debug!("Adding IpEndpoint at '{}', ifprefix: {}", common.path, ifprefix);
+                Endpoint::IpEndpoint {
+                    common,
+                    ifprefix,
+                    addresspools,
+                    routes,
+                } => {
+                    debug!(
+                        "Adding IpEndpoint at '{}', ifprefix: {}",
+                        common.path, ifprefix
+                    );
                     let mut ipendpoint = IpEndpoint::new(ifprefix);
                     for ap in addresspools {
                         debug!("Adding addresspool: {}", ap);
@@ -141,7 +142,9 @@ impl Config {
                     if let Some(permission) = &common.permission {
                         ipendpoint.require_permission(permission);
                     }
-                    server.add_endpoint(&common.path, Box::new(ipendpoint)).await;
+                    server
+                        .add_endpoint(&common.path, Box::new(ipendpoint))
+                        .await;
                 }
                 Endpoint::UdpEndpoint { common } => {
                     debug!("Adding UdpEndpoint at '{}'", common.path);
@@ -149,7 +152,9 @@ impl Config {
                     if let Some(permission) = &common.permission {
                         udpendpoint.require_permission(permission);
                     }
-                    server.add_endpoint(&common.path, Box::new(udpendpoint)).await;
+                    server
+                        .add_endpoint(&common.path, Box::new(udpendpoint))
+                        .await;
                 }
                 Endpoint::Files { common, root } => {
                     debug!("Adding Files at '{}', root: '{}'", common.path, root);
@@ -165,7 +170,6 @@ impl Config {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -196,5 +200,4 @@ mod tests {
         let f = Config::read_from_file("tests/testconfig2.json");
         assert!(f.is_err());
     }
-
 }

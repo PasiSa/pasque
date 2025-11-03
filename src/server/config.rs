@@ -64,7 +64,9 @@ enum Endpoint {
 
 impl Config {
     /// Read JSON-formatted configuration from given configuration file
-    pub fn read_from_file(filename: &str) -> core::result::Result<Config, PsqError> {
+    pub fn read_from_file(
+        filename: impl AsRef<std::path::Path>,
+    ) -> core::result::Result<Config, PsqError> {
         let file = match File::open(filename) {
             Ok(f) => f,
             Err(e) => {

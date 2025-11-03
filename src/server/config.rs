@@ -21,7 +21,6 @@ use super::PsqServer;
 pub struct Config {
     cert_file: String,
     key_file: String,
-    #[serde(default = "default_jwt_secret")]
     jwt_secret: String,
     endpoints: Vec<Endpoint>,
 }
@@ -35,11 +34,6 @@ impl Default for Config {
     fn default() -> Self {
         DEFAULT_CONFIG.clone()
     }
-}
-
-/// This is used if jwt_secret is not present in the configuration.
-fn default_jwt_secret() -> String {
-    "not-secret".to_string()
 }
 
 /// Common attributes to different endpoint types.

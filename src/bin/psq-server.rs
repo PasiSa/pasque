@@ -19,7 +19,7 @@ async fn main() {
         Config::read_from_file(config_path).expect("unable to read config file")
     } else {
         warn!("No config specified, using default configuration.");
-        Config::create_default()
+        Config::default()
     };
 
     let mut psqserver = PsqServer::start(&args.address(), &config).await.unwrap();

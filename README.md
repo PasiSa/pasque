@@ -33,9 +33,10 @@ to bind both IPv4 and IPv6 addresses, for example: `-a 0.0.0.0:443 -a [::]:443`.
 
 The server needs a JSON configuration file that gives links to files containing
 TLS certificate and private key are given in a JSON configuration file. The
-configuration file is given with `-c` option. By default, an example
-configuration file **[server-example.json](src/bin/server-example.json)** is used,
-that contains link to an invalid certificate, but can be used for development
+configuration file is given with `-c` option.
+If no config is specified, the example configuration file from
+**[server-example.json](src/bin/server-example.json)** (at build time) is used.
+It points to an invalid certificate, but can be used for development
 and testing, if certificate validation is disabled at client.
 
 **Starting the example client:**

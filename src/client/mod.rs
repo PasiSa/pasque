@@ -64,6 +64,25 @@ impl PsqClient {
 
         qconfig.verify_peer(!ignore_cert);
 
+        // Probe for the CA certificate location and configure qconfig with it.
+        if !ignore_cert {
+            let probe_result = openssl_probe::probe();
+            if let Some(cert_dir) = probe_result.cert_dir {
+                qconfig
+                    .load_verify_locations_from_directory(
+                        cert_dir.as_path().to_str().expect("valid cert dir"),
+                    )
+                    .expect("loading cert dir");
+            }
+            if let Some(cert_file) = probe_result.cert_file {
+                qconfig
+                    .load_verify_locations_from_file(
+                        cert_file.as_path().to_str().expect("valid cert file"),
+                    )
+                    .expect("loading cert file");
+            }
+        }
+
         qconfig
             .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
             .unwrap();

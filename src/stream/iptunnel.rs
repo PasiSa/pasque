@@ -904,7 +904,8 @@ mod tests {
         let (tunnel, mut tester) = UnixStream::pair().unwrap();
 
         let server = tokio::spawn(async move {
-            let config = Config::create_default();
+            let config = Config::default_without_endpoints();
+
             let mut psqserver =
                 PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
                     .await

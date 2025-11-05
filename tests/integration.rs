@@ -19,7 +19,7 @@ use pasque::{
 async fn test_get_request() {
     init_logger();
     let addr = "127.0.0.1:8888";
-    let config = Config::create_default();
+    let config = Config::default_without_endpoints();
     let server = tokio::spawn(async move {
         let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
             .await
@@ -72,7 +72,7 @@ async fn test_get_request() {
 }
 
 async fn run_server(addr: &str, shutdown: Arc<Notify>) {
-    let config = Config::create_default();
+    let config = Config::default_without_endpoints();
     let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
         .await
         .unwrap();
@@ -186,7 +186,7 @@ async fn tunnel_closing() {
     init_logger();
     let addr = "127.0.0.1:9003";
     let server = tokio::spawn(async move {
-        let config = Config::create_default();
+        let config = Config::default_without_endpoints();
         let mut psqserver = PsqServer::start(&vec![SocketAddr::from_str(addr).unwrap()], &config)
             .await
             .unwrap();

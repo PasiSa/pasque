@@ -2,7 +2,10 @@
 extern crate log;
 
 use clap::Parser;
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use pasque::{server::Config, PsqServer};
 
@@ -11,16 +14,12 @@ async fn main() {
     env_logger::builder().format_timestamp_nanos().init();
 
     let args = Args::new();
-    let config = match Config::read_from_file(args.config()) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                "Could not read config '{}': {}. Applying default configuration.",
-                args.config(),
-                e,
-            );
-            Config::create_default()
-        }
+
+    let config = if let Some(config_path) = args.config_path() {
+        Config::read_from_file(config_path).expect("unable to read config file")
+    } else {
+        warn!("No config specified, using default configuration.");
+        Config::default()
     };
 
     let mut psqserver = PsqServer::start(&args.address(), &config).await.unwrap();
@@ -40,8 +39,8 @@ pub struct Args {
     address: Vec<SocketAddr>,
 
     /// Configuration file to read.
-    #[arg(short, long, default_value = "src/bin/server-example.json")]
-    config: String,
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 }
 
 impl Args {
@@ -55,7 +54,7 @@ impl Args {
         &self.address
     }
 
-    pub fn config(&self) -> &String {
-        &self.config
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config.as_ref().map(PathBuf::as_path)
     }
 }

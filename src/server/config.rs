@@ -3,7 +3,7 @@
 //! Typically read from a JSON file. Includes certificate parameters and
 //! configurations for different kinds of endpoints.
 
-use std::{fs::File, io::BufReader};
+use std::{fs::File, io::BufReader, sync::LazyLock};
 
 use serde::Deserialize;
 
@@ -17,21 +17,27 @@ use super::PsqServer;
 /// are configured and what fields they have.
 ///
 /// [server-example.json]: https://github.com/PasiSa/pasque/blob/main/src/bin/server-example.json
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     cert_file: String,
     key_file: String,
-    #[serde(default = "default_jwt_secret")]
     jwt_secret: String,
     endpoints: Vec<Endpoint>,
 }
 
-fn default_jwt_secret() -> String {
-    "not-secret".to_string()
+static DEFAULT_CONFIG: LazyLock<Config> = LazyLock::new(|| {
+    serde_json::from_slice(include_bytes!("../bin/server-example.json"))
+        .expect("example config must parse")
+});
+
+impl Default for Config {
+    fn default() -> Self {
+        DEFAULT_CONFIG.clone()
+    }
 }
 
 /// Common attributes to different endpoint types.
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Common {
     /// Path to this endpoint.
     pub path: String,
@@ -41,7 +47,7 @@ pub struct Common {
     pub permission: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 enum Endpoint {
     IpEndpoint {
@@ -64,7 +70,9 @@ enum Endpoint {
 
 impl Config {
     /// Read JSON-formatted configuration from given configuration file
-    pub fn read_from_file(filename: &str) -> core::result::Result<Config, PsqError> {
+    pub fn read_from_file(
+        filename: impl AsRef<std::path::Path>,
+    ) -> core::result::Result<Config, PsqError> {
         let file = match File::open(filename) {
             Ok(f) => f,
             Err(e) => {
@@ -87,16 +95,6 @@ impl Config {
         Ok(conf)
     }
 
-    /// Create a default configuration. Can be applied if configuration file cannot be read.
-    pub fn create_default() -> Config {
-        Config {
-            cert_file: "src/bin/cert.crt".to_string(),
-            key_file: "src/bin/cert.key".to_string(),
-            jwt_secret: "not-secret".to_string(),
-            endpoints: Vec::new(),
-        }
-    }
-
     /// File path that contains the PEM formatted TLS certificate.
     pub fn cert_file(&self) -> &String {
         &self.cert_file
@@ -110,6 +108,13 @@ impl Config {
     /// Secret used to decode JWT tokens.
     pub fn jwt_secret(&self) -> &String {
         &self.jwt_secret
+    }
+
+    /// Return a config without endpoints configured. Used in tests.
+    pub fn default_without_endpoints() -> Self {
+        let mut config = Self::default();
+        config.endpoints.clear();
+        config
     }
 
     /// Apply server endpoint settings from configuration.

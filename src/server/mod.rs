@@ -89,7 +89,7 @@ impl PsqServer {
             conn_id_seed,
             clients: ClientMap::new(),
             endpoints: Arc::new(Mutex::new(HashMap::new())),
-            jwt_secret: config.jwt_secret().as_bytes().to_vec(),
+            jwt_secret: config.jwt_secret()?,
             retry_token_key: Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap(),
         };
 

@@ -3,7 +3,7 @@
 //! Typically read from a JSON file. Includes certificate parameters and
 //! configurations for different kinds of endpoints.
 
-use std::{fs::File, io::BufReader, sync::LazyLock};
+use std::{fs::File, io::BufReader, path::PathBuf, sync::LazyLock};
 
 use serde::Deserialize;
 
@@ -21,8 +21,19 @@ use super::PsqServer;
 pub struct Config {
     cert_file: String,
     key_file: String,
-    jwt_secret: String,
+    #[serde(flatten)]
+    jwt_config: JWTSecretConfig,
     endpoints: Vec<Endpoint>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+enum JWTSecretConfig {
+    // A path to a file containing a JWT secret.
+    #[serde(rename = "jwt_secret_path")]
+    FilePath(PathBuf),
+    // A JTW secret passed in the config file literally.
+    #[serde(rename = "jwt_secret")]
+    Plain(String),
 }
 
 static DEFAULT_CONFIG: LazyLock<Config> = LazyLock::new(|| {
@@ -106,8 +117,17 @@ impl Config {
     }
 
     /// Secret used to decode JWT tokens.
-    pub fn jwt_secret(&self) -> &String {
-        &self.jwt_secret
+    pub fn jwt_secret(&self) -> std::io::Result<Vec<u8>> {
+        match &self.jwt_config {
+            JWTSecretConfig::FilePath(path) => {
+                debug!("Loading JWT secret from: {:?}", path);
+                std::fs::read(path)
+            }
+            JWTSecretConfig::Plain(plain) => {
+                warn!("jwt_secret passed literally, this is discouraged. Consider using jwt_secret_path.");
+                Ok(plain.to_owned().into_bytes())
+            }
+        }
     }
 
     /// Return a config without endpoints configured. Used in tests.
@@ -204,5 +224,14 @@ mod tests {
     fn no_fields() {
         let f = Config::read_from_file("tests/testconfig2.json");
         assert!(f.is_err());
+    }
+
+    #[test]
+    fn jwt_path() {
+        let f = Config::read_from_file("tests/testconfig3.json").expect("must parse");
+        assert_eq!(
+            f.jwt_secret().expect("must succeed"),
+            b"jwt-secret-from-file"
+        );
     }
 }

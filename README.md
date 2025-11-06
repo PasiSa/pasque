@@ -58,8 +58,15 @@ fields defining the server operation:
 
 - **key_file**: path to the private key needed with the certificate.
 
-- **jwt_secret**: Secret that is used to decode the JWT tokens. This should
-  actually be a sufficiently long randomly generated string.
+One of:
+
+- **jwt_secret_path** (recommended): Path to a file containing the JWT secret,
+  which is used to decode the JWT tokens.
+  It should contain a sufficiently long randomly generated sequence.
+  The contents are read without any stripping of trailing whitespace.
+
+- **jwt_secret** (discouraged): The JWT secret, in plain form.
+  Discouraged, as it mixes configurations and secrets.
 
 After the global parameters, there are configurations for different endpoints
 that the server operates: IP tunnel endpoint (type: `IpEndpoint`), UDP proxy

@@ -1,0 +1,6 @@
+{
+    "cert_file": "src/bin/cert.crt",
+    "key_file": "src/bin/cert.keys",
+    "endpoints": [ ],
+    "jwt_secret_path": "tests/jwt_secret"
+}

@@ -764,7 +764,7 @@ impl Endpoint for IpEndpoint {
             error!("Could not create TUN interface: {}", e);
             return Err(PsqError::HttpResponse(
                 503,
-                "Count not create TUN interface".to_string(),
+                "Could not create TUN interface".to_string(),
             ));
         }
 

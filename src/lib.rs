@@ -95,7 +95,7 @@ pub enum PsqError {
     #[error("Not supported: {0}")]
     NotSupported(String),
 
-    #[error("HTTP response error: {0}")]
+    #[error("HTTP response error: {1} ({0})")]
     HttpResponse(u16, String),
 
     #[error("Stream closing: {0}")]

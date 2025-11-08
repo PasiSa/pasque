@@ -131,7 +131,11 @@ impl IpTunnel {
                 // TODO: proper error signaling to main program
                 while let Some(Ok(packet)) = reader.next().await {
                     debug!("Interface: {}", Self::packet_output(&packet, packet.len()));
-                    send_h3_dgram(&mut *conn.lock().await, stream_id, &packet)?;
+                    send_h3_dgram(&mut *conn.lock().await, stream_id, &packet).inspect_err(
+                        |e| {
+                            error!("Sending H3 dgram failed: {}", e);
+                        },
+                    )?;
                     if let Err(e) = send_quic_packets(&conn, &socket).await {
                         error!("Sending QUIC packets failed: {}", e);
                         break;
@@ -754,17 +758,22 @@ impl Endpoint for IpEndpoint {
         debug!("Starting IP tunnel");
 
         let tunif = format!("{}-i{}", self.ifprefix, self.tuncount);
-        let mut iptunnel = Box::new(IpTunnel::new(
-            stream_id,
-            &tunif,
-            self.teststream.take(), // First client will have the teststream
-        )?);
+        let mut iptunnel = Box::new(
+            IpTunnel::new(
+                stream_id,
+                &tunif,
+                self.teststream.take(), // First client will have the teststream
+            )
+            .inspect_err(|e| {
+                error!("failed to setup IP tunnel: {e}");
+            })?,
+        );
 
         if let Err(e) = iptunnel.setup_tun_dev(&conn, &socket).await {
             error!("Could not create TUN interface: {}", e);
             return Err(PsqError::HttpResponse(
                 503,
-                "Count not create TUN interface".to_string(),
+                "Could not create TUN interface".to_string(),
             ));
         }
 
@@ -773,11 +782,17 @@ impl Endpoint for IpEndpoint {
         let mut addresses = Vec::<IpAddr>::new();
         let networking = get_os_networking();
         for addrpool in self.addrpools.iter_mut() {
-            networking.add_address(addrpool.prefix.ip().to_string().as_str(), &tunif)?;
-            let addr = addrpool.get()?;
+            networking
+                .add_address(addrpool.prefix.ip().to_string().as_str(), &tunif)
+                .inspect_err(|e| error!("failed to add address: {e}"))?;
+            let addr = addrpool
+                .get()
+                .inspect_err(|e| error!("failed to get address from addrpool: {e}"))?;
             info!("Assigning remote address {}", addr);
             addresses.push(addr);
-            networking.add_route(addr.to_string().as_str(), &tunif)?;
+            networking
+                .add_route(addr.to_string().as_str(), &tunif)
+                .inspect_err(|e| error!("failed to add route: {e}"))?;
         }
 
         // TODO: This should be implemented with new Quiche zero-copy methods

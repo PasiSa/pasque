@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 
-use tokio::{fs, net::UdpSocket, sync::Notify, time::timeout};
+use tokio::{fs, io::AsyncReadExt, net::UdpSocket, sync::Notify, time::timeout};
 
 use pasque::{
     client::PsqClient,
@@ -12,7 +12,7 @@ use pasque::{
         PsqStream,
     },
     test_utils::init_logger,
-    PsqError,
+    PsqError, PtyClient,
 };
 
 #[tokio::test]
@@ -389,6 +389,81 @@ async fn authorization_failing() {
     .err()
     .unwrap();
     assert!(matches!(ret, PsqError::HttpResponse(403, _)));
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn pty_echo_hello() {
+    let addr = "127.0.0.1:7007";
+    let server_notify = Arc::new(Notify::new());
+    let config = Config::read_from_file("tests/endpoints.json").unwrap();
+    let server = tokio::spawn(run_server_from_config(
+        vec![SocketAddr::from_str(addr).unwrap()],
+        config,
+        server_notify.clone(),
+    ));
+
+    let (ptyoutput, mut testreader) = tokio::io::duplex(1024);
+
+    let url = format!("https://{}/", addr);
+    let mut ptyclient = PtyClient::connect(
+        url.as_str(),
+        true,
+        None,
+        "pty",
+        "sh -c \"echo Hello\"",
+        Box::new(ptyoutput),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let client_task = tokio::spawn(async move {
+        while ptyclient.process().await.is_ok() {
+            // Just repeat until error occurs
+        }
+    });
+
+    let result = timeout(Duration::from_millis(1000), async {
+        let mut buf = vec![0u8; 5];
+        testreader.read_exact(&mut buf).await.expect("read output");
+        assert_eq!(&buf, b"Hello");
+    })
+    .await;
+    assert!(result.is_ok(), "Test timed out");
+
+    client_task.abort();
+    server.abort();
+}
+
+#[tokio::test]
+async fn pty_nonexisting_executable() {
+    let addr = "127.0.0.1:7008";
+    let server_notify = Arc::new(Notify::new());
+    let config = Config::read_from_file("tests/endpoints.json").unwrap();
+    let server = tokio::spawn(run_server_from_config(
+        vec![SocketAddr::from_str(addr).unwrap()],
+        config,
+        server_notify.clone(),
+    ));
+
+    let (ptyoutput, mut _testreader) = tokio::io::duplex(1024);
+
+    let url = format!("https://{}/", addr);
+    let result = PtyClient::connect(
+        url.as_str(),
+        true,
+        None,
+        "pty",
+        "xyzxyzxyz",
+        Box::new(ptyoutput),
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert!(matches!(result, PsqError::HttpResponse(500, _)));
 
     server.abort();
 }

@@ -17,7 +17,12 @@
             "path": "files",
             "type": "Files",
             "root": "."
+        },
+        {
+            "path": "pty",
+            "type": "PtyEndpoint"
         }
+
     ],
     "jwt_secret": "not-secret"
 }

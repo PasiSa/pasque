@@ -17,6 +17,8 @@ async fn main() {
         args.token(),
         "pty",
         args.command(),
+        Box::new(tokio::io::stdout()),
+        Some(Box::new(tokio::io::stdin())),
     )
     .await
     .unwrap();

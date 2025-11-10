@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use shlex::Shlex;
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     task::JoinHandle,
 };
 
@@ -30,6 +30,8 @@ impl PtyClient {
         token: Option<&String>,
         urlpath: &str,
         command: &str,
+        out: Box<dyn AsyncWrite + Send + Unpin>,
+        instream: Option<Box<dyn AsyncRead + Send + Unpin>>,
     ) -> Result<PtyClient, PsqError> {
         let mut pclient = PsqClient::connect(urlstr, ignore_cert).await?;
 
@@ -46,14 +48,17 @@ impl PtyClient {
             taskhandle: None,
             terminal: None,
             ready: false,
-            client: true,
+            outstream: Some(Arc::new(Mutex::new(out))),
+            instream: instream.map(|r| Arc::new(Mutex::new(r))),
         });
 
-        stream.start_client_reader(
-            &pclient.connection(),
-            &pclient.socket(),
-            &pclient.h3_connection().as_ref().unwrap(),
-        );
+        if stream.instream.is_some() {
+            stream.start_client_reader(
+                &pclient.connection(),
+                &pclient.socket(),
+                &pclient.h3_connection().as_ref().unwrap(),
+            );
+        }
 
         // Blocks until request is replied and tunnel is set up
         let ret = pclient.add_stream(stream_id, stream).await;
@@ -74,11 +79,16 @@ pub struct PtyStream {
     taskhandle: Option<JoinHandle<Result<(), PsqError>>>,
     terminal: Option<Terminal>, // Only set at the server end
     ready: bool,
-    client: bool, // true if client, false if server
+
+    /// Output writer for the data from terminal, usually stdout.
+    outstream: Option<Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>>,
+
+    /// Input reader for the data to terminal, usually stdin.
+    instream: Option<Arc<tokio::sync::Mutex<Box<dyn AsyncRead + Send + Unpin>>>>,
 }
 
 impl PtyStream {
-    fn new(stream_id: u64, client: bool, command: &str) -> Result<PtyStream, PsqError> {
+    fn new(stream_id: u64, command: &str) -> Result<PtyStream, PsqError> {
         let parts = Shlex::new(command);
         let mut argvec: Vec<String> = parts.collect();
 
@@ -96,7 +106,8 @@ impl PtyStream {
             taskhandle: None,
             terminal: Some(terminal),
             ready: false,
-            client,
+            outstream: None,
+            instream: None,
         })
     }
 
@@ -111,32 +122,38 @@ impl PtyStream {
         let h3_conn = Arc::clone(h3_connection);
 
         let stream_id = self.stream_id;
+        let instream = self.instream.as_ref().map(Arc::clone);
 
         self.taskhandle = Some(tokio::spawn(async move {
             let mut buf = [0u8; 10000];
-            let mut stdin = io::stdin();
-            loop {
-                let n = stdin.read(&mut buf).await?;
-                if n == 0 {
-                    return Ok(());
+            if let Some(instream) = instream {
+                let mut reader = instream.lock().await;
+
+                loop {
+                    let n = reader.read(&mut buf).await?;
+                    if n == 0 {
+                        return Ok(());
+                    }
+                    {
+                        let conn = &mut *qconn.lock().await;
+                        // TODO: Send H3 DATA frame instead
+                        let h3 = &mut *h3_conn.lock().await;
+                        let _written = match h3.send_body(conn, stream_id, &buf[..n], false) {
+                            Ok(v) => v,
+
+                            Err(quiche::h3::Error::Done) => 0,
+
+                            Err(e) => {
+                                error!("{} stream send failed {:?}", conn.trace_id(), e);
+                                return Err(PsqError::Http3(e));
+                            }
+                        };
+                    }
+
+                    send_quic_packets(&qconn, &qsocket).await?;
                 }
-                {
-                    let conn = &mut *qconn.lock().await;
-                    // TODO: Send H3 DATA frame instead
-                    let h3 = &mut *h3_conn.lock().await;
-                    let _written = match h3.send_body(conn, stream_id, &buf[..n], false) {
-                        Ok(v) => v,
-
-                        Err(quiche::h3::Error::Done) => 0,
-
-                        Err(e) => {
-                            error!("{} stream send failed {:?}", conn.trace_id(), e);
-                            return Err(PsqError::Http3(e));
-                        }
-                    };
-                }
-
-                send_quic_packets(&qconn, &qsocket).await?;
+            } else {
+                return Ok(());
             }
         }));
     }
@@ -241,13 +258,16 @@ impl PsqStream for PtyStream {
     }
 
     async fn process_data(&mut self, buf: &[u8]) -> Result<(), PsqError> {
-        if self.client {
-            let mut stdout = io::stdout();
-            if let Err(e) = stdout.write_all(&buf).await {
-                error!("stdout write failed: {}", e);
+        if self.terminal.is_none() {
+            // Client receiving data, should write to desired output device.
+            let writer_mutex = self.outstream.as_mut().unwrap();
+            let mut writer = writer_mutex.lock().await;
+            if let Err(e) = writer.write_all(buf).await {
+                error!("terminal output write failed: {}", e);
                 return Err(PsqError::Io(e));
             }
         } else {
+            // Server receiving data, should write to pseudoterminal.
             if let Some(termin) = self.terminal.as_mut().unwrap().termin.as_mut() {
                 let _n = termin.write(buf)?;
             } else {
@@ -317,7 +337,7 @@ impl Endpoint for PtyEndpoint {
             .map(|s| s.as_str())
             .unwrap_or("bash");
 
-        let mut ptystream = Box::new(PtyStream::new(stream_id, false, &command)?);
+        let mut ptystream = Box::new(PtyStream::new(stream_id, &command)?);
 
         ptystream.start_terminal_reader(session);
 

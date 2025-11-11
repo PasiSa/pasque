@@ -111,6 +111,13 @@ The `Files` endpoint has a single field:
 
 [RFC 9298]: https://datatracker.ietf.org/doc/html/rfc9298
 
+### Terminal (PtyEndpoint)
+
+An experimental pseudoterminal endpoint that enables an interactive terminal
+session between client and server. It serves as a proof of concept exploring
+potential uses of HTTP/3 and QUIC. See **[terminal.md](doc/terminal.md)** for
+more details.
+
 ## Generating JWT tokens
 
 You can use the `gentoken` binary to generate JWT tokens for testing endpoint

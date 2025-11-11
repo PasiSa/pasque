@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use super::*;
 use crate::{
     client::PsqClient,
-    server::Endpoint,
+    server::{clientsession::ClientSession, Endpoint},
     util::{send_quic_packets, MAX_DATAGRAM_SIZE},
     PsqError,
 };
@@ -212,21 +212,25 @@ impl PsqStream for UdpTunnel {
         Ok(())
     }
 
-    async fn process_h3_data(
+    async fn process_h3_response(
         &mut self,
-        h3_conn: &mut quiche::h3::Connection,
+        h3_conn: &Arc<Mutex<quiche::h3::Connection>>,
         conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
         let c = &mut *conn.lock().await;
-        while let Ok(read) = h3_conn.recv_body(c, self.stream_id, buf) {
+        while let Ok(read) = h3_conn.lock().await.recv_body(c, self.stream_id, buf) {
             debug!(
                 "got {} bytes of response data on stream {}",
                 read, self.stream_id
             );
         }
         Ok(())
+    }
+
+    async fn process_data(&mut self, _buf: &[u8]) -> Result<(), PsqError> {
+        Err(PsqError::Unimplemented)
     }
 
     fn stream_id(&self) -> u64 {
@@ -268,10 +272,8 @@ impl Endpoint for UdpEndpoint {
     async fn process_request(
         &mut self,
         request: &[quiche::h3::Header],
-        qconn: &Arc<Mutex<quiche::Connection>>,
-        qsocket: &Arc<UdpSocket>,
+        session: &ClientSession,
         stream_id: u64,
-        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
         let mut desthost = "";
         let mut destport: u16 = 0;
@@ -279,8 +281,12 @@ impl Endpoint for UdpEndpoint {
         let mut authorized = self.permission.is_none();
         for hdr in request {
             check_common_headers(hdr, "connect-udp")?;
-            authorized =
-                authorized || check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+            authorized = authorized
+                || check_authorized(
+                    hdr,
+                    self.permission.as_ref().unwrap(),
+                    &session.jwt_secret(),
+                )?;
 
             if hdr.name() == b":path" {
                 let path = std::path::Path::new(
@@ -337,7 +343,7 @@ impl Endpoint for UdpEndpoint {
         {
             *udptunnel.clientaddr.lock().await = Some(udptunnel.socket.local_addr().unwrap());
         }
-        udptunnel.start_socket_listener(&qconn, &qsocket);
+        udptunnel.start_socket_listener(&session.connection(), &session.socket());
 
         let body = Vec::<u8>::new();
         Ok((Some(udptunnel), body))

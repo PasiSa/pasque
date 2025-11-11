@@ -23,7 +23,7 @@ const MAX_DATAGRAM_SIZE: usize = 1350;
 pub struct PsqClient {
     socket: Arc<UdpSocket>,
     conn: Arc<Mutex<quiche::Connection>>,
-    h3_conn: Option<quiche::h3::Connection>,
+    h3_conn: Option<Arc<Mutex<quiche::h3::Connection>>>,
     url: url::Url,
     streams: HashMap<u64, Box<dyn PsqStream>>,
     timeout_tx: watch::Sender<Option<Duration>>,
@@ -217,13 +217,17 @@ impl PsqClient {
         send_quic_packets(&self.conn, &self.socket).await
     }
 
-    pub fn connection(&mut self) -> Arc<Mutex<quiche::Connection>> {
-        self.conn.clone()
+    pub fn connection(&self) -> &Arc<Mutex<quiche::Connection>> {
+        &self.conn
+    }
+
+    pub(crate) fn socket(&self) -> &Arc<UdpSocket> {
+        &self.socket
     }
 
     // TODO: Remove option, replace it with Result with error if connection not specified
-    pub fn h3_connection(&mut self) -> &mut Option<quiche::h3::Connection> {
-        &mut self.h3_conn
+    pub fn h3_connection(&self) -> &Option<Arc<Mutex<quiche::h3::Connection>>> {
+        &self.h3_conn
     }
 
     pub fn get_url(&self) -> &url::Url {
@@ -280,10 +284,10 @@ impl PsqClient {
                 let mut h3_config = quiche::h3::Config::new().unwrap();
                 h3_config.enable_extended_connect(true);
 
-                self.h3_conn = Some(
+                self.h3_conn = Some(Arc::new(Mutex::new(
                     quiche::h3::Connection::with_transport(&mut conn, &h3_config)
                     .expect("Unable to create HTTP/3 connection, check the server's uni stream limit and window size"),
-                );
+                )));
             }
 
             if self.h3_conn.is_none() {
@@ -311,13 +315,25 @@ impl PsqClient {
                             quiche::h3::Event::Data => {
                                 if status != 200 {
                                     let c = &mut self.conn.lock().await;
-                                    if let Ok(n) =
-                                        self.h3_conn.as_mut().unwrap().recv_body(c, stream_id, buf)
+                                    if let Ok(n) = self
+                                        .h3_conn
+                                        .as_mut()
+                                        .unwrap()
+                                        .lock()
+                                        .await
+                                        .recv_body(c, stream_id, buf)
                                     {
-                                        return Err(PsqError::HttpResponse(
-                                            status,
-                                            format!("{}", String::from_utf8_lossy(&buf[..n]),),
-                                        ));
+                                        if status == 0 {
+                                            // Receiving DATA after earlier received response.
+                                            // Typically after CONNECT for stream-oriented
+                                            // tunnel / proxy (TCP, pty)
+                                            stream.process_data(&buf[..n]).await?;
+                                        } else {
+                                            return Err(PsqError::HttpResponse(
+                                                status,
+                                                format!("{}", String::from_utf8_lossy(&buf[..n]),),
+                                            ));
+                                        }
                                     } else {
                                         return Err(PsqError::HttpResponse(
                                             status,
@@ -326,8 +342,8 @@ impl PsqClient {
                                     }
                                 }
                                 stream
-                                    .process_h3_data(
-                                        &mut self.h3_conn.as_mut().unwrap(),
+                                    .process_h3_response(
+                                        &self.h3_conn.as_mut().unwrap(),
                                         &self.conn,
                                         &self.socket,
                                         buf,
@@ -389,7 +405,7 @@ impl PsqClient {
 
     async fn poll_helper(&mut self) -> Result<(u64, quiche::h3::Event), quiche::h3::Error> {
         let mut conn = &mut *self.conn.lock().await;
-        self.h3_conn.as_mut().unwrap().poll(&mut conn)
+        self.h3_conn.as_mut().unwrap().lock().await.poll(&mut conn)
     }
 }
 

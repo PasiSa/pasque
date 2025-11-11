@@ -7,7 +7,7 @@ use tokio::{net::UdpSocket, sync::Mutex};
 use super::*;
 use crate::{
     client::PsqClient,
-    server::Endpoint,
+    server::{clientsession::ClientSession, Endpoint},
     stream::{prepare_h3_request, PsqStream},
     PsqError,
 };
@@ -35,9 +35,8 @@ impl FileStream {
 
         let stream_id: u64;
         {
-            let a = pconn.connection();
-            let mut conn = a.lock().await;
-            let h3_conn = pconn.h3_connection().as_mut().unwrap();
+            let mut conn = pconn.connection().lock().await;
+            let mut h3_conn = pconn.h3_connection().as_ref().unwrap().lock().await;
 
             stream_id = h3_conn.send_request(&mut *conn, &req, true)?;
         } // release pconn lock
@@ -97,15 +96,15 @@ impl PsqStream for FileStream {
         Ok(())
     }
 
-    async fn process_h3_data(
+    async fn process_h3_response(
         &mut self,
-        h3_conn: &mut quiche::h3::Connection,
+        h3_conn: &Arc<Mutex<quiche::h3::Connection>>,
         conn: &Arc<Mutex<quiche::Connection>>,
         _socket: &Arc<UdpSocket>,
         buf: &mut [u8],
     ) -> Result<(), PsqError> {
         let c = &mut *conn.lock().await;
-        while let Ok(read) = h3_conn.recv_body(c, self.stream_id, buf) {
+        while let Ok(read) = h3_conn.lock().await.recv_body(c, self.stream_id, buf) {
             debug!(
                 "got {} bytes of response data on stream {}",
                 read, self.stream_id
@@ -122,6 +121,10 @@ impl PsqStream for FileStream {
             self.written = read;
         }
         Ok(())
+    }
+
+    async fn process_data(&mut self, _buf: &[u8]) -> Result<(), PsqError> {
+        Err(PsqError::Unimplemented)
     }
 
     fn stream_id(&self) -> u64 {
@@ -162,10 +165,8 @@ impl Endpoint for Files {
     async fn process_request(
         &mut self,
         request: &[quiche::h3::Header],
-        _conn: &Arc<Mutex<quiche::Connection>>,
-        _socket: &Arc<UdpSocket>,
+        session: &ClientSession,
         _stream_id: u64,
-        jwt_secret: &Vec<u8>,
     ) -> Result<(Option<Box<dyn PsqStream + Send + Sync + 'static>>, Vec<u8>), PsqError> {
         debug!("FileStream triggered");
         let mut file_path = std::path::PathBuf::from(&self.root);
@@ -173,8 +174,12 @@ impl Endpoint for Files {
 
         let mut authorized = self.permission.is_none();
         for hdr in request {
-            authorized =
-                authorized || check_authorized(hdr, self.permission.as_ref().unwrap(), jwt_secret)?;
+            authorized = authorized
+                || check_authorized(
+                    hdr,
+                    self.permission.as_ref().unwrap(),
+                    &session.jwt_secret(),
+                )?;
 
             match hdr.name() {
                 b":method" => {

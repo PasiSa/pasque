@@ -81,6 +81,7 @@ pub use crate::{
     stream::{
         filestream::{FileStream, Files},
         iptunnel::{IpEndpoint, IpTunnel},
+        pty::{PtyClient, PtyEndpoint, PtyStream},
         udptunnel::{UdpEndpoint, UdpTunnel},
     },
 };

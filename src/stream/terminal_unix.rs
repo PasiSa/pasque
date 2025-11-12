@@ -63,11 +63,11 @@ impl TerminalHandle {
         grantpt(&master)?;
         unlockpt(&master)?;
 
-        let raw_flags = fcntl(master.as_raw_fd(), FcntlArg::F_GETFD)?;
+        let raw_flags = fcntl(&master, FcntlArg::F_GETFD)?;
         let mut flags = FdFlag::from_bits(raw_flags).unwrap();
         flags |= FdFlag::FD_CLOEXEC;
 
-        fcntl(master.as_raw_fd(), F_SETFD(flags))?;
+        fcntl(&master, F_SETFD(flags))?;
 
         Ok(TerminalHandle(master))
     }
